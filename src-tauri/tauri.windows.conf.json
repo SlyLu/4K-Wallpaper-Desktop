@@ -3,7 +3,7 @@
   "bundle": {
     "resources": {
       "resources/presets/": "resources/presets/",
-      "target/release/WebView2Loader.dll": "resources/WebView2Loader.dll"
+      "resources/windows/x64/WebView2Loader.dll": "resources/WebView2Loader.dll"
     },
     "windows": {
       "nsis": {

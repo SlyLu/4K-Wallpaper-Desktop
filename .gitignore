@@ -2,6 +2,8 @@ node_modules/
 dist/
 src-tauri/target/
 src-tauri/gen/schemas/
+# Generated from the pinned official Microsoft WebView2 SDK during Windows builds.
+src-tauri/resources/windows/*/WebView2Loader.dll
 .idea/
 .vscode/
 .env

@@ -62,6 +62,11 @@ cargo test
 pnpm tauri build
 ```
 
+Windows 首次执行 Rust 检查或 Tauri 构建时，如果本地缺少
+`WebView2Loader.dll`，构建脚本会从微软官方 NuGet 源下载与当前 Rust
+依赖匹配的固定版 WebView2 SDK，并在 SHA-256 校验通过后提取 x64 DLL。
+后续构建会复用已验证的本地文件。
+
 Windows 构建产物位于 `src-tauri/target/release/bundle/`。macOS 构建需要在 macOS 主机运行相同命令，并生成 `.app` 和对应安装产物。V1 不要求商业代码签名、Developer ID 或 notarization。
 
 ## 本地数据
