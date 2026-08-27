@@ -1,0 +1,47 @@
+[package]
+name = "wallpaper-desktop"
+version = "0.1.13"
+description = "Local-first 4K wallpaper desktop application"
+authors = ["4K Wallpaper Desktop contributors"]
+edition = "2024"
+
+[lib]
+name = "wallpaper_desktop_lib"
+crate-type = ["rlib"]
+
+[[bin]]
+name = "wallpaper-desktop"
+path = "src/main.rs"
+test = false
+bench = false
+
+[build-dependencies]
+tauri-build = { version = "2.5.6", features = [] }
+
+[dependencies]
+async-trait = "0.1.89"
+directories = "6.0.0"
+futures-util = "0.3.31"
+image = { version = "0.25.10", default-features = false, features = ["bmp", "jpeg", "png", "webp"] }
+reqwest = { version = "0.12.24", default-features = false, features = ["json", "rustls-tls", "stream", "system-proxy"] }
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.151"
+sha2 = "0.10.9"
+tauri = { version = "2.11.5", features = ["tray-icon"] }
+tauri-plugin-autostart = "2"
+tauri-plugin-dialog = "2"
+thiserror = "2.0.20"
+tokio = { version = "1.48.0", features = ["fs", "io-util", "macros", "sync", "rt", "time"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62.2", features = [
+  "Win32_Foundation",
+  "Win32_System_Com",
+  "Win32_UI_Shell",
+] }
+
+[dev-dependencies]
+tempfile = "3.26.0"

@@ -1,0 +1,14 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "resources": {
+      "resources/presets/": "resources/presets/",
+      "target/release/WebView2Loader.dll": "resources/WebView2Loader.dll"
+    },
+    "windows": {
+      "nsis": {
+        "installerHooks": "./windows/nsis-hooks.nsh"
+      }
+    }
+  }
+}
