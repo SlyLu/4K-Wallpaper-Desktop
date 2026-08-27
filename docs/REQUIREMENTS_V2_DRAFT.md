@@ -1,6 +1,6 @@
 # 4K Wallpaper Desktop V2 功能需求草案
 
-> 状态：Draft 0.1（待产品评审）
+> 状态：Draft 0.2（待产品评审）
 > 日期：2026-08-27
 > 治理：V1 仍以 `docs/REQUIREMENTS.md` 为实施真源；本草案确认前不授权 V2 代码开发。
 
@@ -10,7 +10,7 @@ V2 在 V1 的本地优先、多显示器和稳定静态壁纸能力上，升级�
 
 - 清楚区分在线元数据、在线已下载、本地索引、缺失文件、收藏和集合。
 - 建立可复用壁纸集合，为每块显示器配置可解释的切换规则。
-- 扩展更多在线 Provider，单个 Provider 故障不影响离线能力。
+- 将多个在线 Provider 聚合为统一资源池，单个 Provider 故障不影响其他在线来源和离线能力。
 - 高风险能力可关闭、可降级，不影响静态壁纸主流程。
 
 ## 2. 产品与技术边界
@@ -55,7 +55,7 @@ SQLite
 
 ## 3. 核心用户场景
 
-1. 管理多个本地目录和大量在线下载图片，按来源、分类、标签和状态批量整理。
+1. 从统一搜索和刷新入口同时获取多个已启用图源的结果，再按来源、分类、标签和状态批量整理。
 2. 为工作屏和娱乐屏建立不同集合，使用轮询、洗牌或时间规则切换。
 3. 将一张超宽静态图片按显示器位置切片，形成连续跨屏效果。
 4. 可选启用视频壁纸或本地语义搜索，资源紧张时自动暂停或降级。
@@ -155,17 +155,32 @@ UI 不得再用“本地”同时表示 LocalProvider 和在线下载缓存。
 
 ### FR-V2-PRO-001 Provider 注册表
 
-Provider 统一声明最新、热门、随机、搜索、分页、分类、API Key、下载、速率限制、健康状态和启用优先级。
+Provider 统一声明最新、热门、随机、搜索、分页、分类、API Key、下载、速率限制、健康状态和启用状态。Provider 是内部 Adapter 和资源来源标识，不是用户必须选择的主搜索入口。
 
-### FR-V2-PRO-002 新增来源
+### FR-V2-PRO-002 聚合搜索与刷新
+
+- 搜索、发现刷新和在线元数据同步必须查询所有已启用且支持相应能力的 Provider，不设置单一默认在线 Provider。
+- LocalProvider、本机 SQLite 元数据和所有已启用在线 Provider 共同组成统一资源池；离线时自动只返回本地可用结果。
+- Provider 请求使用有界并发和独立超时。任一来源失败时返回其他来源的部分成功结果，并展示失败来源及可重试状态。
+- UI 只提供统一的搜索和刷新动作；Provider 可作为高级筛选、来源署名、启用开关和诊断条件，不得要求用户逐个图源重复搜索或刷新。
+
+### FR-V2-PRO-003 合并、排序与去重
+
+- 各 Provider 的相关度、热门度和时间字段先转换为统一排序模型，再进行公平交错，避免单个大图源占满首屏。
+- 聚合分页必须保存各 Provider 独立游标或页码，首页、尾页和指定页跳转不得导致稳定结果重复或遗漏。
+- 同一 Provider 使用 `provider + remote_id` 去重；跨 Provider 先按规范化来源 URL 和已知内容 Hash 去重，原图下载后再用文件 Hash 合并重复项。
+- 同一内容存在多个来源时保留全部来源与授权元数据，展示时选择当前可用且授权清晰的主记录，不丢失溯源信息。
+
+### FR-V2-PRO-004 新增来源
 
 V2 Core 至少增加一个使用官方 API、通过授权条款和稳定性评审的在线 Provider。具体来源在 Phase 0 通过 ADR 确认，禁止用网页抓取替代官方 API。
 
-### FR-V2-PRO-003 密钥与隔离
+### FR-V2-PRO-005 密钥、状态与隔离
 
 - API Key 仅保存在本机安全配置中，不写入源码和日志。
 - 无 Key Provider 可独立使用。
 - 单个 Provider 不可用不得影响 LocalProvider 和其他 Provider。
+- 每个 Provider 独立保存启用状态、同步游标、速率限制、最后成功时间和最近错误；不得存在控制全局在线查询的单值 `online_provider`。
 - V2 只加载随应用签名发布的内置 Adapter，不实现在线插件市场。
 
 ## 8. 静态跨屏拼接
@@ -274,6 +289,8 @@ collection_wallpaper
 smart_collection_rule
 provider_config
 provider_health
+provider_sync_state
+wallpaper_provider_source
 wallpaper_file_state
 rotation_queue
 monitor_layout_snapshot
@@ -284,6 +301,7 @@ semantic_index_metadata       # Experimental
 
 - 全部使用有序 Migration。
 - V1 原地升级后收藏、黑名单、历史、调度和本地目录不得丢失。
+- V1 的单值 `online_provider` 必须迁移为 Provider 启用配置；已有 Wallhaven 数据继续保留来源关系，不得重新下载或重复建档。
 - Migration 失败必须回滚并保留原数据库。
 - 大型索引任务不得长时间持有 SQLite 写锁。
 - 语义向量存储方案由基准测试 ADR 决定。
@@ -295,6 +313,7 @@ semantic_index_metadata       # Experimental
 ```text
 CollectionService
 ProviderRegistry
+AggregatedProviderService
 RotationPolicyService
 MonitorLayoutService
 SpannedWallpaperProcessor
@@ -313,7 +332,8 @@ preview_smart_collection
 list_providers
 get_provider_status
 update_provider_config
-sync_provider
+search_all_wallpapers
+refresh_all_wallpapers
 get_rotation_explanation
 previous_wallpaper
 skip_wallpaper
@@ -394,7 +414,7 @@ PlatformUpdateService
 
 ### V2 Phase 4：Provider 中心
 
-- 注册表、配置、健康状态、新增正式 Provider、独立限流和错误隔离。
+- 注册表、聚合查询、统一分页、公平合并、配置、健康状态、新增正式 Provider、独立限流和错误隔离。
 
 ### V2 Phase 5：静态跨屏
 
@@ -420,6 +440,8 @@ PlatformUpdateService
 - 集合可持久化并被每屏 Scheduler 使用。
 - 洗牌队列一轮内不重复。
 - “下一张”全局可见并解释来源。
+- 一次搜索或刷新可合并所有已启用图源；任一图源失败时仍返回其他图源和本地结果。
+- 聚合结果不得因单一图源数据量更大而长期垄断首屏。
 - 新 Provider 故障不影响 Wallhaven、LocalProvider 和离线切换。
 - 静态跨屏在两个目标平台真机验证。
 - 内置 V2 主题可切换外观和导航形态，核心路由与功能入口保持完整。
@@ -440,7 +462,7 @@ PlatformUpdateService
 ## 20. Phase 0 待决策项
 
 1. 动态壁纸是否必须进入 V2 正式版。
-2. 新增 Provider 的具体选择及 API Key 策略。
+2. 首批聚合 Provider 的具体组合、默认启用状态及 API Key 策略。
 3. 是否允许额外下载本地 AI 模型及模型体积上限。
 4. 跨屏是否支持任意错位布局，还是首版只支持常见矩形排列。
 5. 是否具备代码签名与稳定更新渠道。
