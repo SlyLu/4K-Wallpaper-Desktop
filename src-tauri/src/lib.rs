@@ -18,6 +18,13 @@ mod scheduler;
 mod settings;
 mod wallpaper;
 
+const AUTOSTART_ARGUMENT: &str = "--hidden";
+
+/// Distinguishes operating-system auto-start from a user-initiated launch.
+fn is_background_launch(args: &[std::ffi::OsString]) -> bool {
+    args.iter().any(|argument| argument == AUTOSTART_ARGUMENT)
+}
+
 #[cfg(not(test))]
 use cache::CacheService;
 #[cfg(not(test))]
@@ -82,11 +89,13 @@ impl AppState {
 /// Builds and runs the Tauri application with all Phase 0/1 services initialized.
 #[cfg(not(test))]
 pub fn run() -> AppResult<()> {
+    let launch_args = std::env::args_os().collect::<Vec<_>>();
+    let background_launch = is_background_launch(&launch_args);
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
-            None,
+            Some(vec![AUTOSTART_ARGUMENT]),
         ))
         .on_window_event(|window, event| {
             if window.label() != "main" {
@@ -107,7 +116,7 @@ pub fn run() -> AppResult<()> {
                 }
             }
         })
-        .setup(|app| {
+        .setup(move |app| {
             let paths = AppPaths::discover()?;
             paths.ensure_directories()?;
             logging::initialize(&paths.logs_dir)?;
@@ -161,6 +170,11 @@ pub fn run() -> AppResult<()> {
                 "startup cache limit checked"
             );
             desktop::setup_tray(app)?;
+            if background_launch {
+                tracing::info!("auto-start launch is staying hidden in the system tray");
+            } else {
+                desktop::show_main_window(app.handle());
+            }
             scheduler.start(app.handle().clone());
             Ok(())
         })
@@ -211,6 +225,28 @@ pub fn run() -> AppResult<()> {
         }
     });
     Ok(())
+}
+
+#[cfg(test)]
+mod startup_tests {
+    use std::ffi::OsString;
+
+    use super::is_background_launch;
+
+    #[test]
+    fn recognizes_only_the_explicit_background_launch_argument() {
+        assert!(is_background_launch(&[
+            OsString::from("wallpaper-desktop.exe"),
+            OsString::from("--hidden"),
+        ]));
+        assert!(!is_background_launch(&[
+            OsString::from("wallpaper-desktop.exe"),
+            OsString::from("--hidden-window"),
+        ]));
+        assert!(!is_background_launch(&[OsString::from(
+            "wallpaper-desktop.exe"
+        )]));
+    }
 }
 
 #[cfg(not(test))]

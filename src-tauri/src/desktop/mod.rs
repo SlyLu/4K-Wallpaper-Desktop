@@ -61,7 +61,7 @@ fn handle_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
 }
 
 /// Restores and focuses the main window from the tray icon or menu.
-fn show_main_window(app: &AppHandle) {
+pub(crate) fn show_main_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         if let Err(error) = window.show().and_then(|_| window.set_focus()) {
             tracing::warn!(%error, "main window could not be shown from tray");
