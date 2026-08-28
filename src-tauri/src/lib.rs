@@ -217,6 +217,8 @@ pub fn run() -> AppResult<()> {
             commands::set_wallpaper_blacklisted,
             commands::delete_wallpaper_cache,
             commands::configure_wallpaper_rotation,
+            commands::get_rotation_selection,
+            commands::set_rotation_selection,
             commands::configure_rotation_policy,
             commands::get_rotation_explanation,
             commands::get_rotation_rules,

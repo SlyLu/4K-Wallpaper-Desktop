@@ -15,6 +15,7 @@ import {
 import type { FitMode } from "../models/image";
 import type { CatalogQuery, ProviderQuery, WallpaperRecord } from "../models/wallpaper";
 import { queryCollectionWallpapers } from "../api/collections";
+import { getRotationSelection, setRotationSelection } from "../api/scheduler";
 
 export const useWallpaperStore = defineStore("wallpaper", () => {
   const wallpapers = ref<WallpaperRecord[]>([]);
@@ -111,11 +112,24 @@ export const useWallpaperStore = defineStore("wallpaper", () => {
     return thumbnailUrls.value[wallpaper.id] ?? wallpaper.thumbnailUrl ?? "";
   }
 
-  /** Adds or removes one card from the explicit automatic-rotation selection. */
-  function toggleSelected(wallpaperId: number): void {
-    selectedIds.value = selectedIds.value.includes(wallpaperId)
-      ? selectedIds.value.filter((id) => id !== wallpaperId)
-      : [...selectedIds.value, wallpaperId];
+  /** Restores the authoritative checkmarks before any catalog page is opened. */
+  async function restoreSelection(): Promise<void> {
+    selectedIds.value = await getRotationSelection();
+  }
+
+  /** Persists a checkmark immediately and rolls the UI back if SQLite rejects the change. */
+  async function toggleSelected(wallpaperId: number): Promise<void> {
+    const selected = !selectedIds.value.includes(wallpaperId);
+    const previous = selectedIds.value;
+    selectedIds.value = selected
+      ? [...previous, wallpaperId]
+      : previous.filter((id) => id !== wallpaperId);
+    try {
+      selectedIds.value = await setRotationSelection(wallpaperId, selected);
+    } catch (cause) {
+      selectedIds.value = previous;
+      error.value = String(cause);
+    }
   }
 
   /** Adds or removes one record from a cross-page batch without mixing it with rotation selection. */
@@ -282,6 +296,7 @@ export const useWallpaperStore = defineStore("wallpaper", () => {
     syncOnline,
     thumbnailFor,
     toggleSelected,
+    restoreSelection,
     toggleBulkSelected,
     setCurrentPageBulkSelected,
     clearBulkSelected,

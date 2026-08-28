@@ -6,12 +6,14 @@ import { syncCatalogIfDue } from "../api/catalog";
 import { useMonitorStore } from "../stores/monitor";
 import { useSchedulerStore } from "../stores/scheduler";
 import { useSettingsStore } from "../stores/settings";
+import { useWallpaperStore } from "../stores/wallpaper";
 import { applyTheme } from "../utils/theme";
 import WallpaperDetail from "./WallpaperDetail.vue";
 
 const monitorStore = useMonitorStore();
 const schedulerStore = useSchedulerStore();
 const settingsStore = useSettingsStore();
+const wallpaperStore = useWallpaperStore();
 const router = useRouter();
 const nextMessage = ref("");
 let monitorRefreshTimer: ReturnType<typeof setInterval> | undefined;
@@ -68,7 +70,12 @@ async function nextWallpaper(): Promise<void> {
 /** Initializes shared stores once so individual pages never duplicate platform calls. */
 onMounted(async () => {
   systemTheme.addEventListener("change", handleSystemThemeChange);
-  await Promise.all([monitorStore.refresh(), schedulerStore.refresh(), settingsStore.load()]);
+  await Promise.all([
+    monitorStore.refresh(),
+    schedulerStore.refresh(),
+    settingsStore.load(),
+    wallpaperStore.restoreSelection(),
+  ]);
   // The main UI is already visible; provider failures never block or replace local browsing.
   void syncCatalogIfDue().catch(() => undefined);
   // Periodic snapshots cover display hot-plug and resolution/primary-display changes.

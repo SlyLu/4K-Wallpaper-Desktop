@@ -421,6 +421,24 @@ pub fn configure_wallpaper_rotation(
     Ok(schedule)
 }
 
+/// Restores the durable catalog checkmarks used before the recent-five fallback.
+#[tauri::command]
+pub fn get_rotation_selection(state: State<'_, AppState>) -> AppResult<Vec<i64>> {
+    state.database.rotation_selection_ids()
+}
+
+/// Persists one catalog checkmark immediately so sleep or restart cannot discard it.
+#[tauri::command]
+pub fn set_rotation_selection(
+    wallpaper_id: i64,
+    selected: bool,
+    state: State<'_, AppState>,
+) -> AppResult<Vec<i64>> {
+    state
+        .database
+        .set_rotation_selection(wallpaper_id, selected)
+}
+
 /// Returns validated persisted rules so monitor forms never reset on navigation.
 #[tauri::command]
 pub fn get_rotation_rules(

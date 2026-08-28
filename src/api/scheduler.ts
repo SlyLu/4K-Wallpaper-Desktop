@@ -22,6 +22,16 @@ export function configureWallpaperRotation(
   });
 }
 
+/** Restores catalog checkmarks from the durable global rotation source. */
+export function getRotationSelection(): Promise<number[]> {
+  return invoke<number[]>("get_rotation_selection");
+}
+
+/** Commits one catalog checkmark and returns the authoritative persisted selection. */
+export function setRotationSelection(wallpaperId: number, selected: boolean): Promise<number[]> {
+  return invoke<number[]>("set_rotation_selection", { wallpaperId, selected });
+}
+
 /** Returns persisted state for every configured monitor. */
 export function getSchedulerStatus(): Promise<ScheduleRecord[]> {
   return invoke<ScheduleRecord[]>("get_scheduler_status");

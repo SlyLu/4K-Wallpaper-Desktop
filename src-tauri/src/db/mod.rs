@@ -51,6 +51,10 @@ const MIGRATIONS: &[(i64, &str)] = &[
         9,
         include_str!("../../../migrations/0009_v2_static_spanning.sql"),
     ),
+    (
+        10,
+        include_str!("../../../migrations/0010_persisted_rotation_selection.sql"),
+    ),
 ];
 
 /// Owns the single local SQLite connection behind a mutex for Tauri command access.
@@ -1287,6 +1291,14 @@ impl Database {
                 "DELETE FROM rotation_wallpaper WHERE wallpaper_id = ?1",
                 [wallpaper_id],
             )?;
+            transaction.execute(
+                "DELETE FROM rotation_selection WHERE wallpaper_id = ?1",
+                [wallpaper_id],
+            )?;
+            transaction.execute(
+                "DELETE FROM rotation_queue WHERE wallpaper_id = ?1",
+                [wallpaper_id],
+            )?;
         } else {
             transaction.execute(
                 "DELETE FROM wallpaper_exclusion
@@ -1670,6 +1682,53 @@ impl Database {
             .ok_or_else(|| AppError::Database("configured schedule could not be reloaded".into()))
     }
 
+    /// Returns the durable catalog selection shared by basic rotation configuration screens.
+    pub fn rotation_selection_ids(&self) -> AppResult<Vec<i64>> {
+        let connection = self.lock()?;
+        let mut statement = connection.prepare(
+            "SELECT selection.wallpaper_id FROM rotation_selection AS selection
+             JOIN wallpaper ON wallpaper.id = selection.wallpaper_id
+             WHERE wallpaper.blacklisted = 0
+             ORDER BY selection.selected_at, selection.wallpaper_id",
+        )?;
+        let rows = statement.query_map([], |row| row.get(0))?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    /// Persists one card toggle immediately and invalidates queues derived from the old pool.
+    pub fn set_rotation_selection(&self, wallpaper_id: i64, selected: bool) -> AppResult<Vec<i64>> {
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction()?;
+        if selected {
+            let usable: bool = transaction.query_row(
+                "SELECT EXISTS(SELECT 1 FROM wallpaper WHERE id = ?1 AND blacklisted = 0)",
+                [wallpaper_id],
+                |row| row.get(0),
+            )?;
+            if !usable {
+                return Err(AppError::Wallpaper(
+                    "rotation selection contains a missing or disliked wallpaper".into(),
+                ));
+            }
+            transaction.execute(
+                "INSERT INTO rotation_selection(wallpaper_id, selected_at)
+                 VALUES (?1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+                 ON CONFLICT(wallpaper_id) DO NOTHING",
+                [wallpaper_id],
+            )?;
+        } else {
+            transaction.execute(
+                "DELETE FROM rotation_selection WHERE wallpaper_id = ?1",
+                [wallpaper_id],
+            )?;
+        }
+        // A changed global source must not continue consuming a queue built from stale choices.
+        transaction.execute("DELETE FROM rotation_queue", [])?;
+        transaction.commit()?;
+        drop(connection);
+        self.rotation_selection_ids()
+    }
+
     /// Applies an advanced strategy and collection sources after candidates are materialized.
     pub fn set_rotation_policy(
         &self,
@@ -1730,10 +1789,16 @@ impl Database {
                          WHERE source.system_monitor_id = policy.system_monitor_id AND source.enabled = 1),
                         (SELECT GROUP_CONCAT(source.collection_id) FROM monitor_rotation_source AS source
                          WHERE source.system_monitor_id = policy.system_monitor_id AND source.enabled = 1),
-                        (SELECT COUNT(*) FROM rotation_wallpaper AS candidate
-                         JOIN wallpaper ON wallpaper.id = candidate.wallpaper_id
-                         WHERE candidate.system_monitor_id = policy.system_monitor_id
-                           AND wallpaper.blacklisted = 0),
+                        COALESCE(NULLIF((
+                            SELECT COUNT(*) FROM rotation_wallpaper AS candidate
+                            JOIN wallpaper ON wallpaper.id = candidate.wallpaper_id
+                            WHERE candidate.system_monitor_id = policy.system_monitor_id
+                              AND wallpaper.blacklisted = 0
+                        ), 0), (
+                            SELECT COUNT(*) FROM rotation_selection AS selection
+                            JOIN wallpaper ON wallpaper.id = selection.wallpaper_id
+                            WHERE wallpaper.blacklisted = 0
+                        )),
                         (SELECT COUNT(*) FROM rotation_queue AS queue
                          WHERE queue.system_monitor_id = policy.system_monitor_id
                            AND queue.consumed_at IS NULL)
@@ -1776,7 +1841,11 @@ impl Database {
             "SELECT schedule.system_monitor_id, schedule.enabled, schedule.paused,
                     schedule.interval_seconds, schedule.fit_mode, schedule.last_change_at,
                     schedule.next_change_at, schedule.last_error,
-                    COUNT(rotation.wallpaper_id), schedule.selection_mode
+                    COALESCE(NULLIF(COUNT(rotation.wallpaper_id), 0),
+                        (SELECT COUNT(*) FROM rotation_selection AS selection
+                         JOIN wallpaper ON wallpaper.id = selection.wallpaper_id
+                         WHERE wallpaper.blacklisted = 0)),
+                    schedule.selection_mode
              FROM monitor_schedule AS schedule
              LEFT JOIN rotation_wallpaper AS rotation
                ON rotation.system_monitor_id = schedule.system_monitor_id
@@ -1798,8 +1867,11 @@ impl Database {
             "SELECT schedule.system_monitor_id, schedule.enabled, schedule.paused,
                     schedule.interval_seconds, schedule.fit_mode, schedule.last_change_at,
                     schedule.next_change_at, schedule.last_error,
-                    (SELECT COUNT(*) FROM rotation_wallpaper AS rotation
-                     WHERE rotation.system_monitor_id = schedule.system_monitor_id),
+                    COALESCE(NULLIF((SELECT COUNT(*) FROM rotation_wallpaper AS rotation
+                     WHERE rotation.system_monitor_id = schedule.system_monitor_id), 0),
+                     (SELECT COUNT(*) FROM rotation_selection AS selection
+                      JOIN wallpaper ON wallpaper.id = selection.wallpaper_id
+                      WHERE wallpaper.blacklisted = 0)),
                     schedule.selection_mode
              FROM monitor_schedule AS schedule
              WHERE schedule.enabled = 1 AND schedule.paused = 0
@@ -1861,15 +1933,24 @@ impl Database {
                             CASE WHEN selection_mode = 'random' THEN 'shuffle' ELSE 'round_robin' END
                         ),
                         (SELECT COUNT(*) FROM rotation_wallpaper
-                         WHERE system_monitor_id = monitor_schedule.system_monitor_id)
+                         WHERE system_monitor_id = monitor_schedule.system_monitor_id),
+                        (SELECT COUNT(*) FROM rotation_selection AS selection
+                         JOIN wallpaper ON wallpaper.id = selection.wallpaper_id
+                         WHERE wallpaper.blacklisted = 0)
                  FROM monitor_schedule WHERE system_monitor_id = ?1 AND enabled = 1",
                 [system_monitor_id],
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, i64>(2)?,
+                    ))
+                },
             )
             .optional()?
             .ok_or_else(|| AppError::Configuration("enabled schedule does not exist".into()))?;
 
-        if schedule.1 > 0 {
+        if schedule.1 > 0 || schedule.2 > 0 {
             if schedule.0 == "shuffle" {
                 drop(connection);
                 return self.next_shuffled_wallpaper(system_monitor_id);
@@ -1890,13 +1971,21 @@ impl Database {
                       AND monitor.system_monitor_id = ?1
                  ), '') ASC, rotation.selected_at ASC, wallpaper.id ASC"
             };
+            let (source_table, source_filter) = if schedule.1 > 0 {
+                (
+                    "rotation_wallpaper AS rotation",
+                    "rotation.system_monitor_id = ?1 AND",
+                )
+            } else {
+                ("rotation_selection AS rotation", "")
+            };
             let wallpaper_id = connection
                 .query_row(
                     &format!(
                         "SELECT wallpaper.id
-                         FROM rotation_wallpaper AS rotation
+                         FROM {source_table}
                          JOIN wallpaper ON wallpaper.id = rotation.wallpaper_id
-                         WHERE rotation.system_monitor_id = ?1 AND wallpaper.blacklisted = 0
+                         WHERE {source_filter} wallpaper.blacklisted = 0
                          ORDER BY {order} LIMIT 1"
                     ),
                     [system_monitor_id],
@@ -1909,6 +1998,7 @@ impl Database {
             let reason = match schedule.0.as_str() {
                 "weighted_random" => "加权随机：优先收藏并避免刚使用的壁纸",
                 "least_recent" => "最近未使用优先：选择该屏最久未使用项",
+                _ if schedule.1 == 0 => "顺序轮询：使用已勾选的持久化壁纸池",
                 _ => "顺序轮询：按最近使用时间与集合顺序选择",
             };
             connection.execute(
@@ -1989,13 +2079,24 @@ impl Database {
 
         if wallpaper_id.is_none() {
             let next_generation = current_generation.saturating_add(1);
+            let monitor_pool_count: i64 = transaction.query_row(
+                "SELECT COUNT(*) FROM rotation_wallpaper WHERE system_monitor_id = ?1",
+                [system_monitor_id],
+                |row| row.get(0),
+            )?;
             let mut candidates = {
-                let mut statement = transaction.prepare(
+                let candidate_sql = if monitor_pool_count > 0 {
                     "SELECT wallpaper.id FROM rotation_wallpaper AS rotation
                      JOIN wallpaper ON wallpaper.id = rotation.wallpaper_id
                      WHERE rotation.system_monitor_id = ?1 AND wallpaper.blacklisted = 0
-                     ORDER BY RANDOM()",
-                )?;
+                     ORDER BY RANDOM()"
+                } else {
+                    "SELECT wallpaper.id FROM rotation_selection AS rotation
+                     JOIN wallpaper ON wallpaper.id = rotation.wallpaper_id
+                     WHERE wallpaper.blacklisted = 0 AND ?1 IS NOT NULL
+                     ORDER BY RANDOM()"
+                };
+                let mut statement = transaction.prepare(candidate_sql)?;
                 let rows = statement.query_map([system_monitor_id], |row| row.get::<_, i64>(0))?;
                 rows.collect::<Result<Vec<_>, _>>()?
             };
@@ -2224,8 +2325,11 @@ impl Database {
                 "SELECT schedule.system_monitor_id, schedule.enabled, schedule.paused,
                         schedule.interval_seconds, schedule.fit_mode, schedule.last_change_at,
                         schedule.next_change_at, schedule.last_error,
-                        (SELECT COUNT(*) FROM rotation_wallpaper AS rotation
-                         WHERE rotation.system_monitor_id = schedule.system_monitor_id),
+                        COALESCE(NULLIF((SELECT COUNT(*) FROM rotation_wallpaper AS rotation
+                         WHERE rotation.system_monitor_id = schedule.system_monitor_id), 0),
+                         (SELECT COUNT(*) FROM rotation_selection AS selection
+                          JOIN wallpaper ON wallpaper.id = selection.wallpaper_id
+                          WHERE wallpaper.blacklisted = 0)),
                         schedule.selection_mode
                  FROM monitor_schedule AS schedule
                  WHERE schedule.system_monitor_id = ?1",
@@ -2473,10 +2577,10 @@ mod tests {
         let directory = tempfile::tempdir()?;
         let path = directory.path().join("test.db");
         let first = Database::open(&path)?;
-        assert_eq!(first.schema_version()?, 9);
+        assert_eq!(first.schema_version()?, 10);
         drop(first);
         let second = Database::open(&path)?;
-        assert_eq!(second.schema_version()?, 9);
+        assert_eq!(second.schema_version()?, 10);
         Ok(())
     }
 
@@ -2529,7 +2633,7 @@ mod tests {
         drop(connection);
 
         let database = Database::open(&path)?;
-        assert_eq!(database.schema_version()?, 9);
+        assert_eq!(database.schema_version()?, 10);
         let upgraded = database.list_wallpapers(1, 10, false)?;
         assert_eq!(upgraded.total, 1);
         assert!(upgraded.items[0].favorite);
@@ -2835,6 +2939,67 @@ mod tests {
         assert_eq!(display_one.interval_seconds, 600);
         assert_eq!(display_two.selection_mode, "round_robin");
         assert_eq!(display_two.interval_seconds, 1800);
+        Ok(())
+    }
+
+    #[test]
+    fn persisted_catalog_selection_wins_over_recent_fallback_after_restart()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let database_path = directory.path().join("test.db");
+        let database = Database::open(&database_path)?;
+        database.upsert_monitors(&[MonitorInfo {
+            system_monitor_id: "DISPLAY-1".into(),
+            name: "Test Display".into(),
+            width: 1920,
+            height: 1080,
+            position_x: 0,
+            position_y: 0,
+            primary: true,
+        }])?;
+        let recent_path = directory.path().join("recent.jpg");
+        let selected_path = directory.path().join("selected.jpg");
+        std::fs::write(&recent_path, b"recent")?;
+        std::fs::write(&selected_path, b"selected")?;
+        let mut recent = sample_wallpaper();
+        recent.remote_id = "recent".into();
+        recent.original_url = Some("https://example.test/recent.jpg".into());
+        recent.local_path = Some(recent_path.display().to_string());
+        recent.download_status = "downloaded".into();
+        let mut selected = sample_wallpaper();
+        selected.remote_id = "selected".into();
+        selected.original_url = Some("https://example.test/selected.jpg".into());
+        selected.local_path = Some(selected_path.display().to_string());
+        selected.download_status = "downloaded".into();
+        database.upsert_wallpapers(&[recent, selected])?;
+        let page = database.list_wallpapers(1, 10, false)?;
+        let recent_id = page
+            .items
+            .iter()
+            .find(|wallpaper| wallpaper.remote_id == "recent")
+            .ok_or("recent fixture missing")?
+            .id;
+        let selected_id = page
+            .items
+            .iter()
+            .find(|wallpaper| wallpaper.remote_id == "selected")
+            .ok_or("selected fixture missing")?
+            .id;
+        database.record_manual_history(recent_id, "DISPLAY-1")?;
+        database.configure_rotation("DISPLAY-1", &[], 600, "fill", "round_robin")?;
+        database.set_rotation_selection(selected_id, true)?;
+        drop(database);
+
+        let reopened = Database::open(&database_path)?;
+        assert_eq!(reopened.rotation_selection_ids()?, [selected_id]);
+        assert_eq!(reopened.list_schedules()?[0].wallpaper_count, 1);
+        assert_eq!(
+            reopened.next_rotation_wallpaper("DISPLAY-1")?.id,
+            selected_id
+        );
+        reopened.set_wallpaper_blacklisted(selected_id, true)?;
+        assert!(reopened.rotation_selection_ids()?.is_empty());
+        assert_eq!(reopened.next_rotation_wallpaper("DISPLAY-1")?.id, recent_id);
         Ok(())
     }
 
