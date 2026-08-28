@@ -1,0 +1,75 @@
+/*
+ * Background artwork is decorative. It must not replace the palette selected by
+ * the user or lower the contrast of controls when the global overlay is weak.
+ */
+:root[data-has-background="true"][data-theme="light"] {
+  --color-bg: #eef6fb;
+  --color-surface: #ffffff;
+  --color-text: #102231;
+  --color-muted: #405b70;
+  --sidebar-bg: rgba(242, 248, 252, .96);
+}
+
+:root[data-has-background="true"][data-theme="dark"] {
+  --color-bg: #07111d;
+  --color-surface: #0a1b29;
+  --color-text: #f4f9fd;
+  --color-muted: #b1c6d4;
+  --sidebar-bg: rgba(5, 15, 25, .96);
+}
+
+/* Custom themes keep their inline palette; only derived supporting colors are stabilized. */
+:root[data-has-background="true"][data-theme="custom"] {
+  --color-muted: color-mix(in srgb, var(--color-text) 72%, transparent);
+  --sidebar-bg: color-mix(in srgb, var(--color-bg) 96%, transparent);
+}
+
+/*
+ * Component surfaces have their own opacity budget. The background-overlay
+ * slider therefore controls wallpaper clarity without making controls translucent.
+ */
+:root[data-has-background="true"] .discover-hero,
+:root[data-has-background="true"] .settings-card,
+:root[data-has-background="true"] .search-panel,
+:root[data-has-background="true"] .display-card,
+:root[data-has-background="true"] .category-strip button,
+:root[data-has-background="true"] .category-link,
+:root[data-has-background="true"] .drop-zone,
+:root[data-has-background="true"] .feed-tabs,
+:root[data-has-background="true"] .mode-switch,
+:root[data-has-background="true"] .detail-info,
+:root[data-has-background="true"] .rotation-panel,
+:root[data-has-background="true"] .collection-list,
+:root[data-has-background="true"] .collection-detail-header,
+:root[data-has-background="true"] .bulk-entry,
+:root[data-has-background="true"] .bulk-toolbar {
+  background-color: color-mix(in srgb, var(--color-surface) 94%, transparent);
+  backdrop-filter: blur(18px) saturate(80%);
+}
+
+:root[data-has-background="true"] input,
+:root[data-has-background="true"] select,
+:root[data-has-background="true"] .rule-toggle,
+:root[data-has-background="true"] .switch-field {
+  background-color: color-mix(in srgb, var(--color-bg) 97%, transparent);
+}
+
+/* Headings outside a surface receive a local halo instead of darkening the whole wallpaper. */
+:root[data-has-background="true"] .page-header h1,
+:root[data-has-background="true"] .page-header p,
+:root[data-has-background="true"] .section-title h2,
+:root[data-has-background="true"] .section-title p {
+  text-shadow:
+    0 1px 1px color-mix(in srgb, var(--color-bg) 92%, transparent),
+    0 0 12px color-mix(in srgb, var(--color-bg) 88%, transparent);
+}
+
+@media (prefers-contrast: more) {
+  :root[data-has-background="true"] .discover-hero,
+  :root[data-has-background="true"] .settings-card,
+  :root[data-has-background="true"] .search-panel,
+  :root[data-has-background="true"] .rotation-panel {
+    background-color: var(--color-surface);
+    backdrop-filter: none;
+  }
+}
