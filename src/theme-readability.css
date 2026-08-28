@@ -1,33 +1,23 @@
 /*
- * Background artwork is decorative. It must not replace the palette selected by
- * the user or lower the contrast of controls when the global overlay is weak.
+ * Wallpaper, theme, and component readability are independent layers:
+ * the global slider affects only the artwork, while surfaces keep theme-owned contrast.
  */
-:root[data-has-background="true"][data-theme="light"] {
-  --color-bg: #eef6fb;
-  --color-surface: #ffffff;
-  --color-text: #102231;
-  --color-muted: #405b70;
-  --sidebar-bg: rgba(242, 248, 252, .96);
+:root[data-has-background="true"] {
+  --glass-sidebar: color-mix(in srgb, var(--color-bg) 66%, transparent);
+  --glass-surface: color-mix(in srgb, var(--color-surface) 76%, transparent);
+  --glass-control: color-mix(in srgb, var(--color-bg) 88%, transparent);
+  --glass-border: color-mix(in srgb, var(--color-text) 15%, transparent);
 }
 
-:root[data-has-background="true"][data-theme="dark"] {
-  --color-bg: #07111d;
-  --color-surface: #0a1b29;
-  --color-text: #f4f9fd;
-  --color-muted: #b1c6d4;
-  --sidebar-bg: rgba(5, 15, 25, .96);
+/* The translucent sidebar exposes the same full-window artwork as the content area. */
+:root[data-has-background="true"] .sidebar {
+  background: var(--glass-sidebar);
+  border-color: var(--glass-border);
+  box-shadow: 10px 0 36px color-mix(in srgb, var(--color-bg) 24%, transparent);
+  backdrop-filter: blur(20px) saturate(.9);
 }
 
-/* Custom themes keep their inline palette; only derived supporting colors are stabilized. */
-:root[data-has-background="true"][data-theme="custom"] {
-  --color-muted: color-mix(in srgb, var(--color-text) 72%, transparent);
-  --sidebar-bg: color-mix(in srgb, var(--color-bg) 96%, transparent);
-}
-
-/*
- * Component surfaces have their own opacity budget. The background-overlay
- * slider therefore controls wallpaper clarity without making controls translucent.
- */
+/* Major work surfaces share one opacity budget, independent of the wallpaper slider. */
 :root[data-has-background="true"] .discover-hero,
 :root[data-has-background="true"] .settings-card,
 :root[data-has-background="true"] .search-panel,
@@ -42,29 +32,38 @@
 :root[data-has-background="true"] .collection-list,
 :root[data-has-background="true"] .collection-detail-header,
 :root[data-has-background="true"] .bulk-entry,
-:root[data-has-background="true"] .bulk-toolbar {
-  background-color: color-mix(in srgb, var(--color-surface) 94%, transparent);
-  backdrop-filter: blur(18px) saturate(80%);
+:root[data-has-background="true"] .bulk-toolbar,
+:root[data-has-background="true"] .duplicate-panel {
+  border-color: var(--glass-border);
+  background-color: var(--glass-surface);
+  box-shadow: 0 16px 42px color-mix(in srgb, var(--color-bg) 16%, transparent);
+  backdrop-filter: blur(16px) saturate(.88);
 }
 
+/* Inputs need a denser local surface so form values never inherit artwork contrast. */
 :root[data-has-background="true"] input,
 :root[data-has-background="true"] select,
 :root[data-has-background="true"] .rule-toggle,
 :root[data-has-background="true"] .switch-field {
-  background-color: color-mix(in srgb, var(--color-bg) 97%, transparent);
+  color: var(--color-text);
+  border-color: var(--glass-border);
+  background-color: var(--glass-control);
+  backdrop-filter: blur(12px);
 }
 
-/* Headings outside a surface receive a local halo instead of darkening the whole wallpaper. */
+/* Text outside cards receives a compact theme-colored halo instead of a page-wide darkening layer. */
 :root[data-has-background="true"] .page-header h1,
 :root[data-has-background="true"] .page-header p,
 :root[data-has-background="true"] .section-title h2,
 :root[data-has-background="true"] .section-title p {
   text-shadow:
-    0 1px 1px color-mix(in srgb, var(--color-bg) 92%, transparent),
-    0 0 12px color-mix(in srgb, var(--color-bg) 88%, transparent);
+    0 1px 2px var(--color-bg),
+    0 0 16px var(--color-bg),
+    0 0 28px var(--color-bg);
 }
 
 @media (prefers-contrast: more) {
+  :root[data-has-background="true"] .sidebar,
   :root[data-has-background="true"] .discover-hero,
   :root[data-has-background="true"] .settings-card,
   :root[data-has-background="true"] .search-panel,

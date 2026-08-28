@@ -10,7 +10,7 @@ import type { ProviderStatus } from "../models/provider";
 import type { AppConfig } from "../models/settings";
 import { useSettingsStore } from "../stores/settings";
 import { useWallpaperStore } from "../stores/wallpaper";
-import { applyTheme, colorLuminance, readableText } from "../utils/theme";
+import { applyTheme, readableText } from "../utils/theme";
 import { BUILTIN_THEMES } from "../themes/builtin";
 import { getAppStatus } from "../api/platform";
 import type { AppStatus } from "../models/monitor";
@@ -27,7 +27,7 @@ const systemPrefersLight = ref(window.matchMedia("(prefers-color-scheme: light)"
 const cacheLabel = computed(() => draft.value?.cacheLimitBytes === 0 ? "无限制" : `${Math.round(draft.value.cacheLimitBytes / 1073741824)} GB`);
 const themeBackgroundName = computed(() => draft.value?.themeBackgroundImage?.split(/[\\/]/).pop() ?? "尚未选择背景图片");
 
-/** Builds an honest preview from the selected mode and keeps its foreground readable. */
+/** Mirrors the production three-layer composition without deriving theme colors from image pixels. */
 const themePreviewStyle = computed<Record<string, string>>(() => {
   const settings = draft.value;
   const usesLightDefaults = settings?.themeMode === "light" || (settings?.themeMode === "system" && systemPrefersLight.value);
@@ -42,20 +42,15 @@ const themePreviewStyle = computed<Record<string, string>>(() => {
     center: "auto",
     stretch: "100% 100%",
   }[settings?.themeBackgroundFit ?? "fill"];
-  const imageLuminance = settingsStore.backgroundLuminance;
-  const effectiveLuminance = settingsStore.backgroundUrl && imageLuminance !== undefined
-    ? imageLuminance * (1 - (settings?.themeBackgroundOverlay ?? 0.35))
-      + colorLuminance(palette.background) * (settings?.themeBackgroundOverlay ?? 0.35)
-    : undefined;
-  const previewText = effectiveLuminance !== undefined
-    ? effectiveLuminance > 0.58 ? "#102231" : "#f4f9fd"
-    : readableText(palette.background);
+  const previewText = readableText(palette.surface);
+  const previewScrim = readableText(palette.background) === "#07111d" ? "#ffffff" : "#000000";
   return {
     "--preview-accent": palette.accent,
     "--preview-secondary": palette.secondary,
     "--preview-bg": palette.background,
     "--preview-surface": palette.surface,
     "--preview-text": previewText,
+    "--preview-scrim": previewScrim,
     "--preview-image": settingsStore.backgroundUrl ? `url("${settingsStore.backgroundUrl}")` : "none",
     "--preview-size": sizing,
     "--preview-overlay": String(settings?.themeBackgroundOverlay ?? 0.35),
@@ -204,7 +199,7 @@ onBeforeUnmount(() => {
           <label>图片适配<select v-model="draft.themeBackgroundFit"><option value="fill">填充屏幕</option><option value="fit">完整显示</option><option value="center">原始尺寸居中</option><option value="stretch">拉伸填满</option></select></label>
           <label class="overlay-control"><span>背景遮罩强度 <strong>{{ Math.round(draft.themeBackgroundOverlay * 100) }}%</strong></span><input v-model.number="draft.themeBackgroundOverlay" type="range" min="0" max="0.85" step="0.05" /><small><em>图片更清晰</em><em>文字更易阅读</em></small></label>
         </div>
-        <div class="theme-preview" :style="themePreviewStyle"><span></span><strong>{{ draft.themeMode === 'system' ? '跟随系统外观' : '主题预览' }}</strong><small>{{ BUILTIN_THEMES.find((theme) => theme.id === draft.themePack)?.name }} · {{ themeBackgroundName }}</small></div>
+        <div class="theme-preview" :style="themePreviewStyle"><div class="theme-preview-surface"><span></span><strong>{{ draft.themeMode === 'system' ? '跟随系统外观' : '主题预览' }}</strong><small>{{ BUILTIN_THEMES.find((theme) => theme.id === draft.themePack)?.name }} · {{ themeBackgroundName }}</small></div></div>
       </div>
     </section>
     <section class="settings-card"><div><h2>自动切换</h2><p>新显示器配置使用的默认值。</p></div><div class="form-grid"><label>默认周期<select v-model.number="draft.wallpaperChangeIntervalSeconds"><option :value="600">10 分钟</option><option :value="1800">30 分钟</option><option :value="3600">1 小时</option><option :value="86400">每天</option><option :value="604800">每周</option></select></label><label>默认适配<select v-model="draft.wallpaperFitMode"><option value="fill">Fill</option><option value="fit">Fit</option><option value="center">Center</option><option value="stretch">Stretch</option></select></label></div></section>

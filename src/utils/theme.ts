@@ -7,11 +7,12 @@ const COLOR_FIELDS = [
   "--color-bg",
   "--color-surface",
   "--color-text",
+  "--color-page-text",
   "--color-on-accent",
 ] as const;
 
-/** Applies persisted theme tokens without coupling visual preferences to Rust business logic. */
-export function applyTheme(settings: AppConfig, backgroundUrl?: string, luminance?: number): void {
+/** Applies persisted theme tokens without letting background artwork mutate the selected palette. */
+export function applyTheme(settings: AppConfig, backgroundUrl?: string, _luminance?: number): void {
   const root = document.documentElement;
   const manifest = resolveTheme(settings.themePack);
   const systemMode = window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
@@ -26,14 +27,12 @@ export function applyTheme(settings: AppConfig, backgroundUrl?: string, luminanc
   root.dataset.shadow = manifest.shadow;
   root.dataset.motion = manifest.motion;
   root.dataset.glass = String(manifest.glass);
-  const overlayBackground = resolvedMode === "custom"
+  delete root.dataset.backgroundTone;
+  const themeBackground = resolvedMode === "custom"
     ? settings.themeBackground
     : resolvedMode === "light" ? "#eef6fb" : "#07111d";
-  const effectiveLuminance = luminance === undefined
-    ? colorLuminance(overlayBackground)
-    : luminance * (1 - settings.themeBackgroundOverlay)
-      + colorLuminance(overlayBackground) * settings.themeBackgroundOverlay;
-  root.dataset.backgroundTone = effectiveLuminance > 0.58 ? "light" : "dark";
+  // The scrim borrows only the theme's light/dark direction; image pixels never rewrite theme tokens.
+  root.style.setProperty("--theme-background-scrim", readableText(themeBackground) === "#07111d" ? "#ffffff" : "#000000");
   root.style.setProperty("--theme-radius", `${manifest.radius}px`);
   root.style.setProperty("--theme-background-overlay", String(settings.themeBackgroundOverlay));
   applyBackground(root, settings, backgroundUrl);
@@ -46,11 +45,9 @@ export function applyTheme(settings: AppConfig, backgroundUrl?: string, luminanc
   root.style.setProperty("--color-accent-2", settings.themeSecondary);
   root.style.setProperty("--color-bg", settings.themeBackground);
   root.style.setProperty("--color-surface", settings.themeSurface);
-  root.style.setProperty("--color-text", readableText(settings.themeBackground));
+  root.style.setProperty("--color-text", readableText(settings.themeSurface));
+  root.style.setProperty("--color-page-text", readableText(settings.themeBackground));
   root.style.setProperty("--color-on-accent", readableText(settings.themeAccent));
-  if (backgroundUrl && luminance !== undefined) {
-    root.style.setProperty("--color-text", effectiveLuminance > 0.58 ? "#102231" : "#f4f9fd");
-  }
 }
 
 /** Maps validated local background settings to CSS tokens without exposing a filesystem URL. */

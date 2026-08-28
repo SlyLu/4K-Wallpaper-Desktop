@@ -53,6 +53,7 @@ a { color: inherit; text-decoration: none; }
   --color-surface-2: color-mix(in srgb, var(--color-surface) 78%, var(--color-accent));
   --color-border: color-mix(in srgb, var(--color-surface) 62%, #5d849e);
   --color-text: #edf6ff;
+  --color-page-text: var(--color-text);
   --color-muted: #829bad;
   --color-accent: #64e8f5;
   --color-accent-2: #4eb2f4;
@@ -61,6 +62,7 @@ a { color: inherit; text-decoration: none; }
   --sidebar-bg: color-mix(in srgb, var(--color-bg) 92%, transparent);
   --theme-radius: 16px;
   --theme-background-overlay: .35;
+  --theme-background-scrim: #000000;
   --theme-background-size: cover;
 }
 
@@ -82,9 +84,7 @@ a { color: inherit; text-decoration: none; }
 body { position: relative; color: var(--color-text); background: var(--color-bg); transition: color .25s, background .35s; }
 body::before,body::after { position: fixed; z-index: -2; inset: 0; content: ""; pointer-events: none; }
 :root[data-has-background="true"] body::before { background: var(--theme-background-image) center / var(--theme-background-size) no-repeat fixed; }
-:root[data-has-background="true"] body::after { z-index: -1; background: var(--color-bg); opacity: var(--theme-background-overlay); }
-:root[data-has-background="true"][data-background-tone="light"] { --color-text: #102231; --color-muted: #405b70; --color-surface: rgba(255,255,255,.82); --sidebar-bg: rgba(242,248,252,.82); }
-:root[data-has-background="true"][data-background-tone="dark"] { --color-text: #f4f9fd; --color-muted: #b1c6d4; --color-surface: rgba(7,17,29,.82); --sidebar-bg: rgba(5,15,25,.82); }
+:root[data-has-background="true"] body::after { z-index: -1; background: var(--theme-background-scrim); opacity: var(--theme-background-overlay); }
 :root[data-theme-effect="gradient"] body { background: linear-gradient(135deg, var(--color-bg) 12%, color-mix(in srgb, var(--color-bg) 72%, var(--color-accent)) 58%, color-mix(in srgb, var(--color-bg) 76%, var(--color-accent-2))) fixed; }
 :root[data-theme-effect="rainbow"] body { background: linear-gradient(120deg, color-mix(in srgb, var(--color-bg) 78%, #ff3b69), color-mix(in srgb, var(--color-bg) 78%, #ffb000), color-mix(in srgb, var(--color-bg) 78%, #25c77a), color-mix(in srgb, var(--color-bg) 78%, #3a8dff), color-mix(in srgb, var(--color-bg) 78%, #b45cff), color-mix(in srgb, var(--color-bg) 78%, #ff3b69)) fixed; background-size: 300% 300%; animation: rainbow-flow 14s ease infinite; }
 @keyframes rainbow-flow { 0%,100% { background-position: 0 50%; } 50% { background-position: 100% 50%; } }
@@ -104,6 +104,8 @@ button.danger { color: #fff; background: var(--color-danger); }
 .discover-hero,.settings-card,.search-panel,.wallpaper-card,.display-card,.category-strip button,.category-link,.drop-zone,.feed-tabs,.mode-switch,.detail-info { border-color: var(--color-border); background: color-mix(in srgb, var(--color-surface) 92%, transparent); }
 .settings-card p,.display-card span,.display-card small,.card-meta span,.empty-state,.gallery-filters input,.gallery-filters select,.search-panel input,.search-panel select,.form-grid select,.detail-info select,.form-grid label,.detail-info label,.color-grid label { color: var(--color-muted); }
 .settings-card h2,.section-title h2,.page-header h1,.card-meta strong,.empty-state strong,.display-card strong,.detail-info h2 { color: var(--color-text); }
+:root[data-theme="custom"] .page-header h1,:root[data-theme="custom"] .section-title h2 { color: var(--color-page-text); }
+:root[data-theme="custom"] .page-header p:not(.eyebrow),:root[data-theme="custom"] .section-title p { color: color-mix(in srgb,var(--color-page-text) 72%,transparent); }
 .wallpaper-card:hover,.wallpaper-card:focus,.wallpaper-card.selected,.display-card.selected { border-color: var(--color-accent); }
 .wallpaper-card.selected .select-button,.feed-tabs button.active,.mode-switch button.active { color: var(--color-on-accent); background: var(--color-accent); }
 .feed-tabs button,.mode-switch button { color: var(--color-muted); }
@@ -193,7 +195,10 @@ body::before,body::after { z-index: 0; }
 .theme-preview { isolation: isolate; min-height: 110px; align-content: end; background: var(--preview-bg); }
 .theme-preview::before,.theme-preview::after { position: absolute; z-index: -2; inset: 0; content: ""; }
 .theme-preview::before { background: var(--preview-image) center / var(--preview-size) no-repeat; }
-.theme-preview::after { z-index: -1; background: var(--preview-bg); opacity: var(--preview-overlay); }
+.theme-preview::after { z-index: -1; background: var(--preview-scrim); opacity: var(--preview-overlay); }
+.theme-preview-surface { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; padding: 12px; border: 1px solid color-mix(in srgb,var(--preview-text) 18%,transparent); border-radius: 10px; color: var(--preview-text); background: color-mix(in srgb,var(--preview-surface) 82%,transparent); backdrop-filter: blur(14px) saturate(.9); }
+.theme-preview-surface span { grid-row: 1/3; width: 12px; border-radius: 8px; background: linear-gradient(var(--preview-accent),var(--preview-secondary)); }
+.theme-preview-surface small { color: color-mix(in srgb,var(--preview-text) 72%,transparent); }
 
 /* Batch selection is an explicit workspace instead of a second always-visible card action. */
 .bulk-entry,.bulk-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 14px; padding: 12px 14px; border: 1px solid var(--color-border); border-radius: 13px; background: color-mix(in srgb, var(--color-surface) 94%, transparent); }
