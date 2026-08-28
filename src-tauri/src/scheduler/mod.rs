@@ -81,16 +81,38 @@ async fn run_due_schedules(app: &AppHandle) -> AppResult<()> {
 
 /// Runs one complete selection/download/process/set transaction and persists its outcome.
 async fn execute_schedule(state: &AppState, schedule: &ScheduleRecord) {
-    let wallpaper = match state
-        .database
-        .next_rotation_wallpaper(&schedule.system_monitor_id)
-    {
-        Ok(wallpaper) => wallpaper,
+    let rules = match state.database.rotation_rules(&schedule.system_monitor_id) {
+        Ok(rules) => rules,
         Err(error) => {
             record_failure(state, schedule, &error.to_string());
             return;
         }
     };
+    let environment = if rules.pause_on_battery
+        || rules.pause_on_fullscreen
+        || rules.start_time.is_some()
+        || rules.end_time.is_some()
+        || rules.day_group != "all"
+    {
+        match state.platform.environment.runtime_environment() {
+            Ok(environment) => environment,
+            Err(error) => {
+                record_failure(state, schedule, &error.to_string());
+                return;
+            }
+        }
+    } else {
+        crate::platform::RuntimeEnvironment::default()
+    };
+    if let Some(reason) = rules.pause_reason(&environment) {
+        if let Err(error) = state
+            .database
+            .defer_schedule_for_rule(&schedule.system_monitor_id, &reason)
+        {
+            tracing::error!(%error, "rotation rule deferral could not be persisted");
+        }
+        return;
+    }
     let fit_mode = match FitMode::try_from(schedule.fit_mode.as_str()) {
         Ok(mode) => mode,
         Err(error) => {
@@ -105,31 +127,56 @@ async fn execute_schedule(state: &AppState, schedule: &ScheduleRecord) {
         &state.platform,
         &state.paths.wallpapers_original_dir,
     );
-    match service
-        .apply_to_monitor(wallpaper.id, &schedule.system_monitor_id, fit_mode, false)
-        .await
-    {
-        Ok(_) => {
-            if let Err(error) = state.database.complete_schedule_run(
-                &schedule.system_monitor_id,
-                Some(wallpaper.id),
-                None,
-            ) {
-                tracing::error!(%error, monitor = %schedule.system_monitor_id, "scheduler history update failed");
+    let mut failures = Vec::new();
+    for attempt in 1..=3 {
+        let wallpaper = match state
+            .database
+            .next_rotation_wallpaper(&schedule.system_monitor_id)
+        {
+            Ok(wallpaper) => wallpaper,
+            Err(error) => {
+                failures.push(error.to_string());
+                break;
             }
-            let limit = state
-                .settings
-                .lock()
-                .map(|settings| settings.cache_limit_bytes);
-            if let Ok(limit) = limit
-                && let Err(error) = CacheService::new(state.database.clone(), state.paths.clone())
-                    .enforce_limit(limit)
-            {
-                tracing::warn!(%error, "scheduler cache enforcement failed");
+        };
+        match service
+            .apply_to_monitor(wallpaper.id, &schedule.system_monitor_id, fit_mode, false)
+            .await
+        {
+            Ok(processed) => {
+                let retained = match state.database.wallpaper_by_hash(&processed.source_sha256) {
+                    Ok(retained) => retained,
+                    Err(error) => {
+                        failures.push(error.to_string());
+                        continue;
+                    }
+                };
+                if let Err(error) = state.database.complete_schedule_run(
+                    &schedule.system_monitor_id,
+                    Some(retained.id),
+                    None,
+                ) {
+                    tracing::error!(%error, monitor = %schedule.system_monitor_id, "scheduler history update failed");
+                }
+                let limit = state
+                    .settings
+                    .lock()
+                    .map(|settings| settings.cache_limit_bytes);
+                if let Ok(limit) = limit
+                    && let Err(error) =
+                        CacheService::new(state.database.clone(), state.paths.clone())
+                            .enforce_limit(limit)
+                {
+                    tracing::warn!(%error, "scheduler cache enforcement failed");
+                }
+                return;
+            }
+            Err(error) => {
+                failures.push(format!("attempt {attempt}: {error}"));
             }
         }
-        Err(error) => record_failure(state, schedule, &error.to_string()),
     }
+    record_failure(state, schedule, &failures.join(" | "));
 }
 
 /// Stores a bounded error string and advances once, avoiding rapid failure loops after wake.

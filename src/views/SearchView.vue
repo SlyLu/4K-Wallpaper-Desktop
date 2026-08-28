@@ -19,7 +19,7 @@ function catalogQuery(): CatalogQuery {
   return {
     keyword: filters.keyword || undefined,
     category: filters.category as "all" | "nature" | "anime" | "people" | "local",
-    provider: filters.provider as "all" | "wallhaven" | "local",
+    provider: filters.provider as "all" | "wallhaven" | "wikimedia_commons" | "local",
     favorite: filters.favorite === "all" ? undefined : filters.favorite === "yes",
     minWidth: minWidth || undefined,
     minHeight: minWidth >= 3840 ? 2160 : undefined,
@@ -27,7 +27,7 @@ function catalogQuery(): CatalogQuery {
   };
 }
 
-/** Converts compatible local filters into the bounded SFW Wallhaven query contract. */
+/** Converts compatible local filters into the shared bounded provider query contract. */
 function providerQuery(): ProviderQuery {
   return {
     keyword: filters.keyword.trim() || undefined,
@@ -42,7 +42,7 @@ function providerQuery(): ProviderQuery {
   };
 }
 
-/** Searches SQLite first and automatically supplements an empty result from Wallhaven. */
+/** Searches SQLite first and supplements an empty result from all enabled online providers. */
 async function search(): Promise<void> {
   if (searching.value) return;
   searching.value = true;
@@ -51,7 +51,7 @@ async function search(): Promise<void> {
     await wallpaperStore.query(catalogQuery());
     if (wallpaperStore.error || wallpaperStore.total > 0 || !canSearchOnline.value) return;
 
-    onlineMessage.value = "本地没有匹配项，正在搜索 Wallhaven 在线资源库…";
+    onlineMessage.value = "本地没有匹配项，正在并行搜索已启用的在线图源…";
     try {
       const imported = await wallpaperStore.syncOnline(providerQuery());
       onlineMessage.value = wallpaperStore.total > 0
@@ -69,7 +69,7 @@ async function search(): Promise<void> {
 async function searchOnline(): Promise<void> {
   if (searching.value || !canSearchOnline.value) return;
   searching.value = true;
-  onlineMessage.value = "正在搜索 Wallhaven 在线资源库…";
+  onlineMessage.value = "正在并行搜索已启用的在线图源…";
   try {
     // Establish the current local filters before syncOnline refreshes its last catalog query.
     await wallpaperStore.query(catalogQuery());
@@ -91,7 +91,7 @@ onMounted(() => void search());
     <input v-model="filters.keyword" autofocus placeholder="搜索 mountain、雪山、sunset、anime…" />
     <select v-model="filters.category"><option value="all">全部分类</option><option value="nature">自然</option><option value="anime">动漫</option><option value="people">人物</option><option value="local">本地</option></select>
     <select v-model="filters.resolution"><option value="0">全部分辨率</option><option value="3840">≥ 4K</option><option value="5120">≥ 5K</option><option value="7680">≥ 8K</option></select>
-    <select v-model="filters.provider"><option value="all">全部来源</option><option value="wallhaven">Wallhaven</option><option value="local">Local</option></select>
+    <select v-model="filters.provider"><option value="all">全部来源</option><option value="wallhaven">Wallhaven</option><option value="wikimedia_commons">Wikimedia Commons</option><option value="local">Local</option></select>
     <select v-model="filters.favorite"><option value="all">全部收藏状态</option><option value="yes">仅收藏</option><option value="no">未收藏</option></select>
     <button type="submit" :disabled="searching">{{ searching ? "搜索中…" : "搜索" }}</button><button type="button" class="secondary" :disabled="searching || !canSearchOnline" @click="searchOnline">联网搜索</button>
   </form>

@@ -17,4 +17,8 @@ export interface AppConfig {
   themeSecondary: string;
   themeBackground: string;
   themeSurface: string;
+  themePack: "classic" | "gallery" | "compact" | "glass";
+  themeBackgroundImage?: string;
+  themeBackgroundFit: "fill" | "fit" | "center" | "stretch";
+  themeBackgroundOverlay: number;
 }

@@ -1,6 +1,7 @@
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
+    process::Command,
     sync::{Arc, Mutex},
 };
 
@@ -19,7 +20,10 @@ use windows::{
 use crate::{
     error::{AppError, AppResult},
     models::MonitorInfo,
-    platform::{PlatformMonitorService, PlatformWallpaperService, validate_wallpaper_path},
+    platform::{
+        PlatformEnvironmentService, PlatformMonitorService, PlatformWallpaperService,
+        RuntimeEnvironment, validate_wallpaper_path,
+    },
 };
 
 #[derive(Clone, Default)]
@@ -98,6 +102,62 @@ impl PlatformMonitorService for WindowsPlatformAdapter {
     }
 }
 
+impl PlatformEnvironmentService for WindowsPlatformAdapter {
+    /// Uses local Windows power and foreground bounds without retaining process identity.
+    fn runtime_environment(&self) -> AppResult<RuntimeEnvironment> {
+        let script = r#"Add-Type -AssemblyName System.Windows.Forms
+Add-Type @'
+using System;
+using System.Runtime.InteropServices;
+public static class WallpaperRuntime {
+  [StructLayout(LayoutKind.Sequential)] public struct Rect { public int Left, Top, Right, Bottom; }
+  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr window, out Rect bounds);
+}
+'@
+$battery=Get-CimInstance Win32_Battery -ErrorAction SilentlyContinue
+$onBattery=($null -ne $battery -and $battery.BatteryStatus -eq 1)
+$bounds=New-Object WallpaperRuntime+Rect
+$window=[WallpaperRuntime]::GetForegroundWindow()
+$valid=($window -ne [IntPtr]::Zero -and [WallpaperRuntime]::GetWindowRect($window,[ref]$bounds))
+$fullscreen=$false
+if($valid){ foreach($screen in [System.Windows.Forms.Screen]::AllScreens){ $b=$screen.Bounds; if($bounds.Left -le $b.Left -and $bounds.Top -le $b.Top -and $bounds.Right -ge $b.Right -and $bounds.Bottom -ge $b.Bottom){$fullscreen=$true} } }
+$now=Get-Date
+$day=[int]$now.DayOfWeek
+if($day -eq 0){$day=7}
+$minutes=($now.Hour * 60 + $now.Minute)
+Write-Output "$onBattery,$fullscreen,$day,$minutes""#;
+        let output = Command::new("powershell")
+            .args(["-NoProfile", "-NonInteractive", "-Command", script])
+            .output()?;
+        if !output.status.success() {
+            return Err(AppError::platform("Windows battery status query failed"));
+        }
+        let state = String::from_utf8_lossy(&output.stdout);
+        let mut values = state.trim().split(',');
+        let on_battery = values
+            .next()
+            .is_some_and(|value| value.eq_ignore_ascii_case("true"));
+        let fullscreen_app = values
+            .next()
+            .is_some_and(|value| value.eq_ignore_ascii_case("true"));
+        let iso_weekday = values
+            .next()
+            .and_then(|value| value.parse().ok())
+            .ok_or_else(|| AppError::platform("Windows local weekday query failed"))?;
+        let local_minutes = values
+            .next()
+            .and_then(|value| value.parse().ok())
+            .ok_or_else(|| AppError::platform("Windows local time query failed"))?;
+        Ok(RuntimeEnvironment {
+            on_battery,
+            fullscreen_app,
+            iso_weekday,
+            local_minutes,
+        })
+    }
+}
+
 impl PlatformWallpaperService for WindowsPlatformAdapter {
     /// Applies the same image explicitly to every active Windows display.
     fn set_wallpaper_for_all(&self, image_path: &Path) -> AppResult<()> {
@@ -132,6 +192,13 @@ impl PlatformWallpaperService for WindowsPlatformAdapter {
         self.remember_assignment(monitor_id, &path)?;
         tracing::info!(monitor_id, path = %path.display(), "wallpaper set for Windows display");
         Ok(())
+    }
+
+    /// Reads the OS-owned path before a multi-monitor operation changes any display.
+    fn get_wallpaper_for_monitor(&self, monitor_id: &str) -> AppResult<PathBuf> {
+        let _apartment = ComApartment::initialize()?;
+        let wallpaper = create_desktop_wallpaper()?;
+        get_current_wallpaper(&wallpaper, monitor_id)
     }
 
     /// Windows 11 stores wallpaper per virtual desktop; restore the application's last assignments.
@@ -252,9 +319,14 @@ fn positive_dimension(value: i32, label: &str) -> AppResult<u32> {
 mod tests {
     use std::{fs, path::PathBuf};
 
+    use image::{Rgb, RgbImage};
     use windows::Win32::Foundation::RECT;
 
-    use crate::platform::{PlatformMonitorService, PlatformWallpaperService};
+    use crate::{
+        image_processing::{ImageProcessor, SpanFitMode},
+        platform::{PlatformEnvironmentService, PlatformMonitorService, PlatformWallpaperService},
+        span::calculate_monitor_layout,
+    };
 
     use super::{
         ComApartment, WindowsPlatformAdapter, contains_origin, create_desktop_wallpaper,
@@ -330,6 +402,15 @@ mod tests {
     }
 
     #[test]
+    fn native_runtime_environment_reports_valid_local_time()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let environment = WindowsPlatformAdapter::new().runtime_environment()?;
+        assert!((1..=7).contains(&environment.iso_weekday));
+        assert!(environment.local_minutes < 24 * 60);
+        Ok(())
+    }
+
+    #[test]
     #[ignore = "changes the primary desktop image briefly and restores it"]
     fn native_primary_wallpaper_round_trip() -> Result<(), Box<dyn std::error::Error>> {
         let adapter = WindowsPlatformAdapter::new();
@@ -379,6 +460,50 @@ mod tests {
         for monitor in &monitors {
             let configured_path = get_current_wallpaper(&native, &monitor.system_monitor_id)?;
             assert_eq!(configured_path.canonicalize()?, expected_path);
+        }
+        drop(restore_guards);
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "applies distinct virtual-canvas slices to every display and restores them"]
+    fn native_spanning_slices_round_trip() -> Result<(), Box<dyn std::error::Error>> {
+        let adapter = WindowsPlatformAdapter::new();
+        let monitors = adapter.get_monitors()?;
+        if monitors.len() < 2 {
+            return Ok(());
+        }
+        let _apartment = ComApartment::initialize()?;
+        let native = create_desktop_wallpaper()?;
+        let mut restore_guards = Vec::with_capacity(monitors.len());
+        for monitor in &monitors {
+            restore_guards.push(WallpaperRestore {
+                wallpaper: native.clone(),
+                monitor_id: monitor.system_monitor_id.clone(),
+                original_path: get_current_wallpaper(&native, &monitor.system_monitor_id)?,
+            });
+        }
+        let directory = tempfile::tempdir()?;
+        let source = directory.path().join("span-source.jpg");
+        RgbImage::from_fn(1600, 900, |x, y| {
+            Rgb([(x % 255) as u8, (y % 255) as u8, 160])
+        })
+        .save(&source)?;
+        let processor = ImageProcessor::new(
+            directory.path().join("thumbnails"),
+            directory.path().join("processed"),
+        );
+        let layout = calculate_monitor_layout(&monitors)?;
+        let slices = processor.prepare_spanning_slices(&source, &layout, SpanFitMode::Fill)?;
+        for slice in &slices {
+            adapter.set_wallpaper_for_monitor(
+                &slice.system_monitor_id,
+                PathBuf::from(&slice.path).as_path(),
+            )?;
+            assert!(same_windows_path(
+                &get_current_wallpaper(&native, &slice.system_monitor_id)?,
+                PathBuf::from(&slice.path).as_path()
+            ));
         }
         drop(restore_guards);
         Ok(())

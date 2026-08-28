@@ -23,17 +23,42 @@ impl LocalProvider {
         Self { roots }
     }
 
-    /// Returns the complete approved-root snapshot for explicit indexing operations.
+    /// Returns the complete approved-root snapshot for adapter-level tests.
+    #[cfg(test)]
     pub async fn scan_all(&self) -> AppResult<Vec<RemoteWallpaper>> {
         self.scan().await
     }
 
+    /// Enumerates supported files without decoding them so unchanged snapshots can be skipped.
+    pub async fn discover_files(&self) -> AppResult<Vec<PathBuf>> {
+        let roots = self.roots.clone();
+        tokio::task::spawn_blocking(move || discover_paths(&roots))
+            .await
+            .map_err(|error| AppError::Provider(format!("local discovery task failed: {error}")))?
+    }
+
+    /// Validates and hashes one changed file through the shared image safety policy.
+    pub fn inspect_file(path: &Path) -> AppResult<RemoteWallpaper> {
+        read_local_metadata(path)
+    }
+
     /// Performs blocking filesystem traversal away from the async application runtime.
     async fn scan(&self) -> AppResult<Vec<RemoteWallpaper>> {
-        let roots = self.roots.clone();
-        tokio::task::spawn_blocking(move || scan_roots(&roots))
-            .await
-            .map_err(|error| AppError::Provider(format!("local scan task failed: {error}")))?
+        let paths = self.discover_files().await?;
+        tokio::task::spawn_blocking(move || {
+            let mut wallpapers = Vec::with_capacity(paths.len());
+            for path in paths {
+                match read_local_metadata(&path) {
+                    Ok(wallpaper) => wallpapers.push(wallpaper),
+                    Err(error) => {
+                        tracing::warn!(path = %path.display(), %error, "invalid local image was skipped");
+                    }
+                }
+            }
+            Ok(wallpapers)
+        })
+        .await
+        .map_err(|error| AppError::Provider(format!("local scan task failed: {error}")))?
     }
 
     /// Applies provider-neutral search and bounded pagination to the local index snapshot.
@@ -108,18 +133,13 @@ impl WallpaperProvider for LocalProvider {
 }
 
 /// Recursively discovers supported files without following directory symlinks.
-fn scan_roots(roots: &[PathBuf]) -> AppResult<Vec<RemoteWallpaper>> {
-    let mut wallpapers = Vec::new();
+fn discover_paths(roots: &[PathBuf]) -> AppResult<Vec<PathBuf>> {
+    let mut files = Vec::new();
     let mut pending: Vec<PathBuf> = roots.to_vec();
     while let Some(path) = pending.pop() {
         if path.is_file() {
             if is_supported_image(&path) {
-                match read_local_metadata(&path) {
-                    Ok(wallpaper) => wallpapers.push(wallpaper),
-                    Err(error) => {
-                        tracing::warn!(path = %path.display(), %error, "invalid local image was skipped");
-                    }
-                }
+                files.push(path);
             }
             continue;
         }
@@ -140,16 +160,13 @@ fn scan_roots(roots: &[PathBuf]) -> AppResult<Vec<RemoteWallpaper>> {
             if file_type.is_dir() {
                 pending.push(path);
             } else if file_type.is_file() && is_supported_image(&path) {
-                match read_local_metadata(&path) {
-                    Ok(wallpaper) => wallpapers.push(wallpaper),
-                    Err(error) => {
-                        tracing::warn!(path = %path.display(), %error, "invalid local image was skipped");
-                    }
-                }
+                files.push(path);
             }
         }
     }
-    Ok(wallpapers)
+    files.sort();
+    files.dedup();
+    Ok(files)
 }
 
 /// Reuses the Phase 4 decoder so local dimensions, format, and hash follow one safety policy.
@@ -179,6 +196,10 @@ fn read_local_metadata(path: &Path) -> AppResult<RemoteWallpaper> {
         purity: "local".into(),
         tags: Vec::new(),
         created_at: None,
+        author: None,
+        license_name: None,
+        license_url: None,
+        perceptual_hash: Some(metadata.perceptual_hash),
     })
 }
 

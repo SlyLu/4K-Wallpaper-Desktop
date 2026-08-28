@@ -1,9 +1,15 @@
-use std::{path::Path, process::Command};
+use std::{
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 use crate::{
     error::{AppError, AppResult},
     models::MonitorInfo,
-    platform::{PlatformMonitorService, PlatformWallpaperService, validate_wallpaper_path},
+    platform::{
+        PlatformEnvironmentService, PlatformMonitorService, PlatformWallpaperService,
+        RuntimeEnvironment, validate_wallpaper_path,
+    },
 };
 
 type CGDirectDisplayId = u32;
@@ -89,6 +95,53 @@ impl PlatformMonitorService for MacOsPlatformAdapter {
     }
 }
 
+impl PlatformEnvironmentService for MacOsPlatformAdapter {
+    /// Reads battery power and the frontmost window's AXFullScreen attribute through local tools.
+    fn runtime_environment(&self) -> AppResult<RuntimeEnvironment> {
+        let power = Command::new("pmset").args(["-g", "batt"]).output()?;
+        if !power.status.success() {
+            return Err(AppError::platform("macOS power status query failed"));
+        }
+        let on_battery = String::from_utf8_lossy(&power.stdout).contains("Battery Power");
+        let script = r#"tell application "System Events"
+set frontProcess to first application process whose frontmost is true
+try
+return value of attribute "AXFullScreen" of window 1 of frontProcess
+on error
+return false
+end try
+end tell"#;
+        let fullscreen = Command::new("osascript").args(["-e", script]).output()?;
+        if !fullscreen.status.success() {
+            return Err(AppError::platform("macOS full-screen status query failed"));
+        }
+        let local_time = Command::new("date").arg("+%u,%H,%M").output()?;
+        if !local_time.status.success() {
+            return Err(AppError::platform("macOS local time query failed"));
+        }
+        let local_time = String::from_utf8_lossy(&local_time.stdout);
+        let mut values = local_time.trim().split(',');
+        let iso_weekday = values
+            .next()
+            .and_then(|value| value.parse().ok())
+            .ok_or_else(|| AppError::platform("macOS weekday was invalid"))?;
+        let hour: u16 = values
+            .next()
+            .and_then(|value| value.parse().ok())
+            .ok_or_else(|| AppError::platform("macOS hour was invalid"))?;
+        let minute: u16 = values
+            .next()
+            .and_then(|value| value.parse().ok())
+            .ok_or_else(|| AppError::platform("macOS minute was invalid"))?;
+        Ok(RuntimeEnvironment {
+            on_battery,
+            fullscreen_app: String::from_utf8_lossy(&fullscreen.stdout).trim() == "true",
+            iso_weekday,
+            local_minutes: hour * 60 + minute,
+        })
+    }
+}
+
 impl PlatformWallpaperService for MacOsPlatformAdapter {
     /// Uses AppKit through JavaScript for Automation to update every NSScreen desktop image.
     fn set_wallpaper_for_all(&self, image_path: &Path) -> AppResult<()> {
@@ -104,6 +157,46 @@ impl PlatformWallpaperService for MacOsPlatformAdapter {
         let path = validate_wallpaper_path(image_path)?;
         run_appkit_wallpaper_script(Some(display_id), &path)
     }
+
+    /// Reads NSWorkspace's current image URL for rollback without changing desktop state.
+    fn get_wallpaper_for_monitor(&self, monitor_id: &str) -> AppResult<PathBuf> {
+        let display_id = monitor_id
+            .parse::<u32>()
+            .map_err(|_| AppError::monitor(format!("invalid macOS display ID: {monitor_id}")))?;
+        current_appkit_wallpaper(display_id)
+    }
+}
+
+/// Resolves one screen's current desktop image through the same AppKit bridge used for writes.
+fn current_appkit_wallpaper(display_id: u32) -> AppResult<PathBuf> {
+    let script = format!(
+        r#"ObjC.import('AppKit');
+const target = {display_id};
+const workspace = $.NSWorkspace.sharedWorkspace;
+for (const screen of $.NSScreen.screens.js) {{
+  const number = Number(ObjC.unwrap(screen.deviceDescription.objectForKey('NSScreenNumber')));
+  if (number === target) {{
+    const url = workspace.desktopImageURLForScreen(screen);
+    if (url) console.log(ObjC.unwrap(url.path));
+  }}
+}}"#
+    );
+    let output = Command::new("osascript")
+        .args(["-l", "JavaScript", "-e", &script])
+        .output()?;
+    if !output.status.success() {
+        return Err(AppError::Wallpaper(format!(
+            "macOS wallpaper path query failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    let path = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    if path.is_empty() {
+        return Err(AppError::Wallpaper(
+            "macOS did not return a desktop image for the requested display".into(),
+        ));
+    }
+    Ok(PathBuf::from(path))
 }
 
 /// Runs a small AppKit bridge locally; JSON encoding keeps paths safe inside JavaScript source.

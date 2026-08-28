@@ -20,6 +20,9 @@ export interface WallpaperRecord {
   favorite: boolean;
   blacklisted: boolean;
   preset: boolean;
+  fileAvailability: "remote" | "available" | "temporarily_unavailable" | "missing";
+  storageKind: "remote_metadata" | "user_source" | "managed_download" | "processed" | "thumbnail";
+  fileCopyCount: number;
   tags: string[];
 }
 
@@ -28,6 +31,19 @@ export interface WallpaperPage {
   page: number;
   pageSize: number;
   total: number;
+}
+
+export interface DuplicateFileCopy {
+  wallpaperId: number;
+  path: string;
+  storageKind: WallpaperRecord["storageKind"];
+  availability: Exclude<WallpaperRecord["fileAvailability"], "remote">;
+  fileSize?: number;
+}
+
+export interface DuplicateFileGroup {
+  contentHash: string;
+  copies: DuplicateFileCopy[];
 }
 
 export interface ThumbnailData {
@@ -41,12 +57,22 @@ export interface CatalogQuery {
   keyword?: string;
   name?: string;
   category?: "all" | "nature" | "anime" | "people" | "local";
-  provider?: "all" | "wallhaven" | "local";
+  provider?: "all" | "wallhaven" | "wikimedia_commons" | "local";
   /** Includes every original stored on this device without changing its provider identity. */
   locallyAvailable?: boolean;
+  fileBacked?: boolean;
+  downloadStatus?: string;
+  fileAvailability?: WallpaperRecord["fileAvailability"];
+  storageKind?: WallpaperRecord["storageKind"];
+  collectionId?: number;
   favorite?: boolean;
   minWidth?: number;
   minHeight?: number;
+  maxWidth?: number;
+  maxHeight?: number;
+  aspectRatio?: string;
+  mimeType?: string;
+  tags?: string[];
   includeBlacklisted?: boolean;
   sort?: CatalogSort;
   page?: number;

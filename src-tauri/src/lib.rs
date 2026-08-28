@@ -1,6 +1,7 @@
 #![cfg_attr(test, allow(dead_code))]
 
 mod cache;
+mod collection;
 #[cfg(not(test))]
 mod commands;
 mod db;
@@ -16,6 +17,7 @@ mod provider;
 #[cfg(not(test))]
 mod scheduler;
 mod settings;
+mod span;
 mod wallpaper;
 
 const AUTOSTART_ARGUMENT: &str = "--hidden";
@@ -28,6 +30,8 @@ fn is_background_launch(args: &[std::ffi::OsString]) -> bool {
 #[cfg(not(test))]
 use cache::CacheService;
 #[cfg(not(test))]
+use collection::CollectionService;
+#[cfg(not(test))]
 use db::Database;
 #[cfg(not(test))]
 use error::{AppError, AppResult};
@@ -38,7 +42,7 @@ use paths::AppPaths;
 #[cfg(not(test))]
 use platform::PlatformServices;
 #[cfg(not(test))]
-use provider::ProviderServices;
+use provider::{AggregatedProviderService, ProviderServices};
 #[cfg(not(test))]
 use scheduler::SchedulerService;
 #[cfg(not(test))]
@@ -57,8 +61,10 @@ pub struct AppState {
     pub paths: AppPaths,
     pub platform: PlatformServices,
     pub providers: ProviderServices,
+    pub aggregated_providers: AggregatedProviderService,
     pub images: ImageProcessor,
     pub scheduler: SchedulerService,
+    pub collections: CollectionService,
     pub settings: Mutex<AppConfig>,
 }
 
@@ -70,8 +76,10 @@ impl AppState {
         paths: AppPaths,
         platform: PlatformServices,
         providers: ProviderServices,
+        aggregated_providers: AggregatedProviderService,
         images: ImageProcessor,
         scheduler: SchedulerService,
+        collections: CollectionService,
         settings: AppConfig,
     ) -> Self {
         Self {
@@ -79,8 +87,10 @@ impl AppState {
             paths,
             platform,
             providers,
+            aggregated_providers,
             images,
             scheduler,
+            collections,
             settings: Mutex::new(settings),
         }
     }
@@ -145,16 +155,21 @@ pub fn run() -> AppResult<()> {
             tracing::info!(count = imported, "bundled preset catalog imported");
             let platform = platform::create_platform_services()?;
             let providers = ProviderServices::new(&paths)?;
+            let aggregated_providers =
+                AggregatedProviderService::new(database.clone(), providers.clone());
             let images =
                 ImageProcessor::new(paths.thumbnails_dir.clone(), paths.processed_dir.clone());
             let scheduler = SchedulerService::new();
+            let collections = CollectionService::new(database.clone());
             app.manage(AppState::new(
                 database,
                 paths,
                 platform,
                 providers,
+                aggregated_providers,
                 images,
                 scheduler.clone(),
+                collections,
                 config,
             ));
             let state = app.state::<AppState>();
@@ -181,6 +196,7 @@ pub fn run() -> AppResult<()> {
         .invoke_handler(tauri::generate_handler![
             commands::get_app_status,
             commands::get_monitors,
+            commands::get_monitor_layout,
             commands::set_wallpaper,
             commands::set_wallpaper_for_monitor,
             commands::list_wallpapers,
@@ -195,15 +211,35 @@ pub fn run() -> AppResult<()> {
             commands::download_wallpaper,
             commands::get_wallpaper_original_bytes,
             commands::apply_catalog_wallpaper,
+            commands::apply_spanning_wallpaper,
+            commands::disable_spanning_wallpaper,
             commands::set_wallpaper_favorite,
             commands::set_wallpaper_blacklisted,
             commands::delete_wallpaper_cache,
             commands::configure_wallpaper_rotation,
+            commands::configure_rotation_policy,
+            commands::get_rotation_explanation,
+            commands::get_rotation_rules,
+            commands::previous_wallpaper,
+            commands::skip_wallpaper,
             commands::get_scheduler_status,
             commands::pause_scheduler,
             commands::resume_scheduler,
             commands::trigger_next_wallpaper,
             commands::query_catalog,
+            commands::list_duplicate_file_groups,
+            commands::list_providers,
+            commands::list_wallpaper_sources,
+            commands::update_provider_config,
+            commands::list_collections,
+            commands::create_collection,
+            commands::update_collection,
+            commands::delete_collection,
+            commands::add_collection_wallpapers,
+            commands::remove_collection_wallpapers,
+            commands::set_smart_collection_rule,
+            commands::preview_smart_collection,
+            commands::query_collection_wallpapers,
             commands::sync_catalog,
             commands::sync_catalog_if_due,
             commands::scan_local_directory,
@@ -212,6 +248,8 @@ pub fn run() -> AppResult<()> {
             commands::prune_missing_local_wallpapers,
             commands::remove_local_directory,
             commands::get_settings,
+            commands::import_theme_background,
+            commands::load_theme_background,
             commands::update_settings,
             commands::get_cache_info,
             commands::clear_cache,

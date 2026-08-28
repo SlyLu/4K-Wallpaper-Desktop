@@ -292,6 +292,10 @@ fn map_listing(value: Listing) -> RemoteWallpaper {
         purity: value.purity,
         tags: Vec::new(),
         created_at: Some(value.created_at),
+        author: None,
+        license_name: None,
+        license_url: None,
+        perceptual_hash: None,
     }
 }
 

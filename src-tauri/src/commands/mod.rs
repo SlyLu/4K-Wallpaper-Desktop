@@ -11,12 +11,15 @@ use crate::{
     AppState,
     cache::{CacheCleanupResult, CacheInfo, CacheService},
     error::AppResult,
-    image_processing::{FitMode, ImageMetadata, ProcessedImage},
+    image_processing::{FitMode, ImageMetadata, ProcessedImage, SpanFitMode},
     models::{
-        CatalogQuery, MonitorInfo, NewWallpaper, ScheduleRecord, WallpaperPage, WallpaperRecord,
+        AppliedWallpaper, CatalogQuery, CollectionRecord, DuplicateFileGroup, MonitorInfo,
+        NewWallpaper, ProviderStatus, RotationExplanation, ScheduleRecord, SmartCollectionRule,
+        WallpaperPage, WallpaperProviderSource, WallpaperRecord,
     },
     provider::{LocalProvider, RemoteWallpaper, WallpaperCategory, WallpaperQuery},
     settings::AppConfig,
+    span::{MonitorLayout, SpannedWallpaperService, SpanningApplyResult, calculate_monitor_layout},
     wallpaper::WallpaperService,
 };
 
@@ -27,6 +30,16 @@ pub struct AppStatus {
     database_path: String,
     platform: &'static str,
     schema_version: i64,
+}
+
+/// Processed local UI background data never leaves the Tauri IPC boundary or AppData.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThemeBackgroundData {
+    pub path: String,
+    pub mime_type: String,
+    pub luminance: f32,
+    pub bytes: Vec<u8>,
 }
 
 #[derive(Serialize)]
@@ -53,6 +66,13 @@ pub fn get_monitors(state: State<'_, AppState>) -> AppResult<Vec<MonitorInfo>> {
     let monitors = state.platform.monitors.get_monitors()?;
     tracing::info!(count = monitors.len(), "display enumeration completed");
     Ok(monitors)
+}
+
+/// Returns a normalized virtual canvas used by preview and static spanning workflows.
+#[tauri::command]
+pub fn get_monitor_layout(state: State<'_, AppState>) -> AppResult<MonitorLayout> {
+    let monitors = state.platform.monitors.get_monitors()?;
+    calculate_monitor_layout(&monitors)
 }
 
 /// Sets one validated local image on every active display.
@@ -271,12 +291,32 @@ pub async fn apply_catalog_wallpaper(
     monitor_id: String,
     fit_mode: FitMode,
     state: State<'_, AppState>,
-) -> AppResult<ProcessedImage> {
+) -> AppResult<AppliedWallpaper> {
     let processed = wallpaper_service(&state)
         .apply_to_monitor(wallpaper_id, &monitor_id, fit_mode, true)
         .await?;
     enforce_cache_best_effort(&state);
-    Ok(processed)
+    let wallpaper = state.database.wallpaper_by_hash(&processed.source_sha256)?;
+    Ok(AppliedWallpaper {
+        processed,
+        wallpaper,
+    })
+}
+
+/// Generates and applies one continuous static image across the current monitor geometry.
+#[tauri::command]
+pub async fn apply_spanning_wallpaper(
+    wallpaper_id: i64,
+    fit_mode: SpanFitMode,
+    state: State<'_, AppState>,
+) -> AppResult<SpanningApplyResult> {
+    spanning_service(&state).apply(wallpaper_id, fit_mode).await
+}
+
+/// Restores the independent per-monitor paths captured before spanning mode was enabled.
+#[tauri::command]
+pub fn disable_spanning_wallpaper(state: State<'_, AppState>) -> AppResult<usize> {
+    spanning_service(&state).disable()
 }
 
 /// Updates favorite state through the Phase 5 Core.
@@ -344,6 +384,7 @@ pub fn configure_wallpaper_rotation(
     interval_seconds: u64,
     fit_mode: FitMode,
     selection_mode: String,
+    rules: Option<serde_json::Value>,
     state: State<'_, AppState>,
 ) -> AppResult<ScheduleRecord> {
     let monitors = state.platform.monitors.get_monitors()?;
@@ -363,8 +404,116 @@ pub fn configure_wallpaper_rotation(
         fit_mode.as_str(),
         &selection_mode,
     )?;
+    if let Some(rules) = rules {
+        let strategy = if selection_mode == "random" {
+            "shuffle"
+        } else {
+            "round_robin"
+        };
+        state.database.set_rotation_policy(
+            &monitor_id,
+            strategy,
+            &[],
+            &serde_json::to_string(&rules)?,
+        )?;
+    }
     state.scheduler.wake();
     Ok(schedule)
+}
+
+/// Returns validated persisted rules so monitor forms never reset on navigation.
+#[tauri::command]
+pub fn get_rotation_rules(
+    monitor_id: String,
+    state: State<'_, AppState>,
+) -> AppResult<crate::models::RotationRules> {
+    state.database.rotation_rules(&monitor_id)
+}
+
+/// Configures collection-backed V2 rotation while preserving the V1 scheduler contract.
+#[tauri::command]
+pub fn configure_rotation_policy(
+    monitor_id: String,
+    collection_ids: Vec<i64>,
+    interval_seconds: u64,
+    fit_mode: String,
+    strategy: String,
+    rules: serde_json::Value,
+    state: State<'_, AppState>,
+) -> AppResult<ScheduleRecord> {
+    let wallpaper_ids = state.collections.resolve_wallpaper_ids(&collection_ids)?;
+    let legacy_selection = if matches!(strategy.as_str(), "shuffle" | "weighted_random") {
+        "random"
+    } else {
+        "round_robin"
+    };
+    let schedule = state.database.configure_rotation(
+        &monitor_id,
+        &wallpaper_ids,
+        interval_seconds,
+        &fit_mode,
+        legacy_selection,
+    )?;
+    state.database.set_rotation_policy(
+        &monitor_id,
+        &strategy,
+        &collection_ids,
+        &serde_json::to_string(&rules)?,
+    )?;
+    state.scheduler.wake();
+    Ok(schedule)
+}
+
+/// Returns the last persisted explanation for one display's selection policy.
+#[tauri::command]
+pub fn get_rotation_explanation(
+    monitor_id: String,
+    state: State<'_, AppState>,
+) -> AppResult<RotationExplanation> {
+    state.database.rotation_explanation(&monitor_id)
+}
+
+/// Applies the most recent different wallpaper without changing the configured policy.
+#[tauri::command]
+pub async fn previous_wallpaper(
+    monitor_id: String,
+    state: State<'_, AppState>,
+) -> AppResult<crate::image_processing::ProcessedImage> {
+    let wallpaper = state.database.previous_rotation_wallpaper(&monitor_id)?;
+    let fit_mode = state
+        .database
+        .list_schedules()?
+        .into_iter()
+        .find(|schedule| schedule.system_monitor_id == monitor_id)
+        .map(|schedule| schedule.fit_mode)
+        .unwrap_or_else(|| "fill".into());
+    let service = wallpaper_service(&state);
+    let processed = service
+        .apply_to_monitor(
+            wallpaper.id,
+            &monitor_id,
+            crate::image_processing::FitMode::try_from(fit_mode.as_str())?,
+            false,
+        )
+        .await?;
+    state
+        .database
+        .record_manual_history(wallpaper.id, &monitor_id)?;
+    state
+        .database
+        .set_rotation_reason(&monitor_id, "用户选择上一张壁纸")?;
+    Ok(processed)
+}
+
+/// Skips the current item by consuming the next policy candidate immediately.
+#[tauri::command]
+pub fn skip_wallpaper(monitor_id: String, state: State<'_, AppState>) -> AppResult<()> {
+    state.database.trigger_schedule_now(&monitor_id)?;
+    state
+        .database
+        .set_rotation_reason(&monitor_id, "用户跳过当前壁纸")?;
+    state.scheduler.wake();
+    Ok(())
 }
 
 /// Returns all persisted per-monitor scheduler states.
@@ -407,6 +556,139 @@ pub fn query_catalog(query: CatalogQuery, state: State<'_, AppState>) -> AppResu
     state.database.search_wallpapers(&query)
 }
 
+/// Exposes duplicate file locations without mutating or deleting either copy.
+#[tauri::command]
+pub fn list_duplicate_file_groups(
+    state: State<'_, AppState>,
+) -> AppResult<Vec<DuplicateFileGroup>> {
+    state.database.list_duplicate_file_groups()
+}
+
+/// Lists each built-in provider's independent enablement and health state.
+#[tauri::command]
+pub fn list_providers(state: State<'_, AppState>) -> AppResult<Vec<ProviderStatus>> {
+    state.database.list_provider_status()
+}
+
+/// Returns all retained provider attribution for one deduplicated wallpaper.
+#[tauri::command]
+pub fn list_wallpaper_sources(
+    wallpaper_id: i64,
+    state: State<'_, AppState>,
+) -> AppResult<Vec<WallpaperProviderSource>> {
+    state.database.list_wallpaper_sources(wallpaper_id)
+}
+
+/// Enables or disables one provider without selecting a global default source.
+#[tauri::command]
+pub fn update_provider_config(
+    provider: String,
+    enabled: bool,
+    state: State<'_, AppState>,
+) -> AppResult<Vec<ProviderStatus>> {
+    // Registry resolution prevents arbitrary provider names from entering persisted config.
+    state.providers.get(&provider)?;
+    state.database.set_provider_enabled(&provider, enabled)?;
+    state.database.list_provider_status()
+}
+
+/// Lists manual and smart collections in user-defined order.
+#[tauri::command]
+pub fn list_collections(state: State<'_, AppState>) -> AppResult<Vec<CollectionRecord>> {
+    state.collections.list()
+}
+
+/// Creates one manual collection without touching wallpaper files.
+#[tauri::command]
+pub fn create_collection(
+    name: String,
+    description: String,
+    state: State<'_, AppState>,
+) -> AppResult<CollectionRecord> {
+    state.collections.create(&name, &description)
+}
+
+/// Updates collection metadata and optional cover selection.
+#[tauri::command]
+pub fn update_collection(
+    collection_id: i64,
+    name: String,
+    description: String,
+    cover_wallpaper_id: Option<i64>,
+    position: i64,
+    state: State<'_, AppState>,
+) -> AppResult<CollectionRecord> {
+    state.collections.update(
+        collection_id,
+        &name,
+        &description,
+        cover_wallpaper_id,
+        position,
+    )
+}
+
+/// Deletes only the collection container and membership relationships.
+#[tauri::command]
+pub fn delete_collection(collection_id: i64, state: State<'_, AppState>) -> AppResult<()> {
+    state.collections.delete(collection_id)
+}
+
+/// Adds multiple wallpapers to one manual collection in a single transaction.
+#[tauri::command]
+pub fn add_collection_wallpapers(
+    collection_id: i64,
+    wallpaper_ids: Vec<i64>,
+    state: State<'_, AppState>,
+) -> AppResult<usize> {
+    state
+        .collections
+        .add_wallpapers(collection_id, &wallpaper_ids)
+}
+
+/// Removes only collection membership for the requested wallpapers.
+#[tauri::command]
+pub fn remove_collection_wallpapers(
+    collection_id: i64,
+    wallpaper_ids: Vec<i64>,
+    state: State<'_, AppState>,
+) -> AppResult<usize> {
+    state
+        .collections
+        .remove_wallpapers(collection_id, &wallpaper_ids)
+}
+
+/// Saves one schema-versioned smart rule after previewing its current result set.
+#[tauri::command]
+pub fn set_smart_collection_rule(
+    collection_id: i64,
+    rule: SmartCollectionRule,
+    state: State<'_, AppState>,
+) -> AppResult<WallpaperPage> {
+    state.collections.set_smart_rule(collection_id, &rule)
+}
+
+/// Previews a smart rule without persisting arbitrary query text.
+#[tauri::command]
+pub fn preview_smart_collection(
+    rule: SmartCollectionRule,
+    page: u32,
+    page_size: u32,
+    state: State<'_, AppState>,
+) -> AppResult<WallpaperPage> {
+    state.collections.preview_smart_rule(&rule, page, page_size)
+}
+
+/// Queries manual or smart collection contents through the bounded page contract.
+#[tauri::command]
+pub fn query_collection_wallpapers(
+    collection_id: i64,
+    page: u32,
+    page_size: u32,
+    state: State<'_, AppState>,
+) -> AppResult<WallpaperPage> {
+    state.collections.wallpapers(collection_id, page, page_size)
+}
+
 /// Fetches one Wallhaven metadata page and upserts it without downloading 4K originals.
 #[tauri::command]
 pub async fn sync_catalog(query: WallpaperQuery, state: State<'_, AppState>) -> AppResult<usize> {
@@ -447,9 +729,17 @@ async fn sync_online_metadata(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_owned);
-    let wallpapers = state.providers.get("wallhaven")?.search(query).await?;
+    let aggregated = state.aggregated_providers.search(query).await?;
+    for (provider, error) in &aggregated.failures {
+        tracing::warn!(
+            provider,
+            error,
+            "provider failed while other sources remained available"
+        );
+    }
     let synced_at = current_sync_stamp()?;
-    let records: Vec<_> = wallpapers
+    let records: Vec<_> = aggregated
+        .wallpapers
         .into_iter()
         .map(|wallpaper| {
             let mut record = remote_to_new(wallpaper, &requested_category, &synced_at, None);
@@ -520,30 +810,60 @@ pub fn remove_local_wallpaper(wallpaper_id: i64, state: State<'_, AppState>) -> 
 /// Reconciles external file deletions before the refreshed gallery query runs.
 #[tauri::command]
 pub fn prune_missing_local_wallpapers(state: State<'_, AppState>) -> AppResult<usize> {
-    state.database.prune_missing_local_wallpapers()
+    let roots = state
+        .settings
+        .lock()
+        .map_err(|_| crate::error::AppError::configuration("settings mutex was poisoned"))?
+        .local_directories
+        .clone();
+    state.database.reconcile_local_file_states(&roots)
 }
 
-/// Validates, thumbnails, and indexes a bounded set of explicitly supplied local paths.
+/// Skips unchanged files by size and mtime, then validates only new or changed image content.
 async fn index_local_paths(paths: Vec<PathBuf>, state: &State<'_, AppState>) -> AppResult<usize> {
     let provider = LocalProvider::new(paths);
-    let wallpapers = provider.scan_all().await?;
+    let files = provider.discover_files().await?;
     let synced_at = current_sync_stamp()?;
-    let mut records = Vec::with_capacity(wallpapers.len());
-    for wallpaper in wallpapers {
-        let local_path = wallpaper.local_path.as_deref().ok_or_else(|| {
-            crate::error::AppError::Provider("local scan returned no file path".into())
+    let mut indexed = 0_usize;
+    for local_path in files {
+        let metadata = std::fs::metadata(&local_path)?;
+        let modified_at_ms = metadata
+            .modified()?
+            .duration_since(UNIX_EPOCH)
+            .map_err(|error| crate::error::AppError::FileSystem(error.to_string()))?
+            .as_millis();
+        let modified_at_ms = u64::try_from(modified_at_ms).map_err(|_| {
+            crate::error::AppError::FileSystem("local file timestamp is out of range".into())
         })?;
+        if state
+            .database
+            .local_file_is_unchanged(&local_path, metadata.len(), modified_at_ms)?
+        {
+            indexed += 1;
+            continue;
+        }
+
+        let wallpaper = LocalProvider::inspect_file(&local_path)?;
         let thumbnail = state
             .images
-            .create_thumbnail(local_path, Some(640), Some(360))?;
-        records.push(remote_to_new(
+            .create_thumbnail(&local_path, Some(640), Some(360))?;
+        let record = remote_to_new(
             wallpaper,
             &WallpaperCategory::Local,
             &synced_at,
             Some(thumbnail.path),
-        ));
+        );
+        let upserted = state.database.upsert_wallpapers(&[record])?;
+        if upserted == 1 {
+            state.database.record_local_file_snapshot(
+                &local_path,
+                metadata.len(),
+                modified_at_ms,
+            )?;
+            indexed += 1;
+        }
     }
-    state.database.upsert_wallpapers(&records)
+    Ok(indexed)
 }
 
 /// Persists only dropped/scanned directories so individual files do not broaden disk access.
@@ -589,6 +909,56 @@ pub fn get_settings(state: State<'_, AppState>) -> AppResult<AppConfig> {
         .map_err(|_| crate::error::AppError::configuration("settings mutex was poisoned"))
 }
 
+/// Validates and downscales a user-selected UI background into application-owned cache.
+#[tauri::command]
+pub fn import_theme_background(
+    path: PathBuf,
+    state: State<'_, AppState>,
+) -> AppResult<ThemeBackgroundData> {
+    let processed = state
+        .images
+        .create_thumbnail(&path, Some(2560), Some(1440))?;
+    let retained = state
+        .paths
+        .config_dir
+        .join(format!("theme-background-{}.jpg", processed.source_sha256));
+    if !retained.is_file() {
+        // Theme backgrounds are preferences, so normal thumbnail cache cleanup must not remove them.
+        std::fs::copy(&processed.path, &retained)?;
+    }
+    load_theme_background_data(&retained, &state)
+}
+
+/// Reloads only application-owned background bytes; missing files trigger a frontend fallback.
+#[tauri::command]
+pub fn load_theme_background(
+    path: PathBuf,
+    state: State<'_, AppState>,
+) -> AppResult<ThemeBackgroundData> {
+    load_theme_background_data(&path, &state)
+}
+
+/// Enforces the AppData boundary before returning a bounded processed image to WebView.
+fn load_theme_background_data(
+    path: &std::path::Path,
+    state: &AppState,
+) -> AppResult<ThemeBackgroundData> {
+    let canonical_root = std::fs::canonicalize(&state.paths.root)?;
+    let canonical_path = std::fs::canonicalize(path)?;
+    if !canonical_path.starts_with(&canonical_root) {
+        return Err(crate::error::AppError::FileSystem(
+            "theme background must be stored inside application data".into(),
+        ));
+    }
+    let metadata = state.images.inspect(&canonical_path)?;
+    Ok(ThemeBackgroundData {
+        path: canonical_path.display().to_string(),
+        mime_type: metadata.mime_type.into(),
+        luminance: state.images.average_luminance(&canonical_path)?,
+        bytes: std::fs::read(canonical_path)?,
+    })
+}
+
 /// Validates and atomically stores editable V1 settings.
 #[tauri::command]
 pub fn update_settings(
@@ -628,6 +998,23 @@ pub fn update_settings(
     ) {
         return Err(crate::error::AppError::configuration(
             "unsupported application theme effect",
+        ));
+    }
+    if !matches!(
+        settings.theme_pack.as_str(),
+        "classic" | "gallery" | "compact" | "glass"
+    ) {
+        return Err(crate::error::AppError::configuration(
+            "unsupported built-in theme pack",
+        ));
+    }
+    if !matches!(
+        settings.theme_background_fit.as_str(),
+        "fill" | "fit" | "center" | "stretch"
+    ) || !(0.0..=0.85).contains(&settings.theme_background_overlay)
+    {
+        return Err(crate::error::AppError::configuration(
+            "invalid application background settings",
         ));
     }
     // V1 system mode follows only OS light/dark appearance and never persists a custom background effect.
@@ -746,9 +1133,13 @@ fn remote_to_new(
         category,
         purity: wallpaper.purity,
         hash: is_local.then_some(wallpaper.remote_id),
+        perceptual_hash: wallpaper.perceptual_hash,
         download_status: if is_local { "downloaded" } else { "remote" }.into(),
         preset: false,
         created_at: wallpaper.created_at,
+        author: wallpaper.author,
+        license_name: wallpaper.license_name,
+        license_url: wallpaper.license_url,
         synced_at: synced_at.to_owned(),
         tags: wallpaper.tags,
     }
@@ -774,6 +1165,17 @@ fn wallpaper_service<'a>(state: &'a State<'_, AppState>) -> WallpaperService<'a>
         &state.providers,
         &state.images,
         &state.platform,
+        &state.paths.wallpapers_original_dir,
+    )
+}
+
+/// Constructs the V2 spanning service while keeping orchestration out of IPC commands.
+fn spanning_service<'a>(state: &'a State<'_, AppState>) -> SpannedWallpaperService<'a> {
+    SpannedWallpaperService::new(
+        &state.database,
+        &state.platform,
+        &state.providers,
+        &state.images,
         &state.paths.wallpapers_original_dir,
     )
 }

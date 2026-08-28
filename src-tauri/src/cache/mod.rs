@@ -250,9 +250,13 @@ mod tests {
             category: "nature".into(),
             purity: "sfw".into(),
             hash: Some(format!("hash-{id}")),
+            perceptual_hash: None,
             download_status: "downloaded".into(),
             preset: false,
             created_at: None,
+            author: None,
+            license_name: None,
+            license_url: None,
             synced_at: "2026-01-01T00:00:00Z".into(),
             tags: Vec::new(),
         }

@@ -2,7 +2,7 @@
 
 一款轻量、无广告、纯本地运行的跨平台 4K 壁纸桌面应用。项目使用 Tauri 2、Vue 3、TypeScript、Rust 和 SQLite，支持从 Wallhaven 浏览高清壁纸，也能安全管理用户自己的本地图库。
 
-## V1 功能
+## V2 功能
 
 - 推荐、最新、随机、分类和 Metadata 模糊搜索
 - 30 张离线预设缩略图，高清原图按需下载
@@ -14,6 +14,13 @@
 - 5 GB 默认缓存上限、LRU 自动清理、手动清理和收藏保护
 - 系统托盘、关闭到托盘，以及登录后仅驻留托盘的开机启动设置
 - 深色、浅色、跟随系统、自定义配色、渐变和彩虹应用主题
+- Wallhaven 与 Wikimedia Commons 多图源聚合、独立健康状态和公平合并
+- 规范 URL、缩略图感知指纹与下载后 SHA-256 多层跨源去重，并保留来源、作者与许可证
+- 手动/智能集合、按显示器集合来源和可解释的四种轮换策略
+- 工作日/周末、时间段、电池与全屏暂停规则，以及最多 3 次候选重试
+- 一张静态原图按真实显示器布局切片的跨屏 Fill / Fit-to-span
+- 4 套声明式外观主题、完整/紧凑/顶部/Dock 导航和本地应用背景图片
+- V1 原地数据库迁移、文件可用性状态、增量图库扫描与重复副本视图
 
 ## 下载安装
 
@@ -31,7 +38,7 @@ macOS Apple Silicon 安装产物必须在对应真机完成构建和验证后再
   - Windows：WebView2 与可用的 MSVC/MinGW 原生工具链
   - macOS：Xcode Command Line Tools
 
-当前 Windows GNU 验证环境通过 `scripts/tauri.ps1` 自动加入用户级 MinGW64 工具链路径。
+当前 Windows GNU 验证环境通过 `scripts/tauri.ps1` 自动加入用户级 MinGW64 工具链路径；全新环境应先安装 MSYS2 MinGW64，或使用完整 MSVC Build Tools。
 
 ## 安装依赖
 
@@ -50,10 +57,16 @@ pnpm tauri dev
 ```bash
 pnpm typecheck
 pnpm build
-cd src-tauri
-cargo fmt --all -- --check
-cargo check
-cargo test
+pnpm tauri --version
+```
+
+Windows GNU 环境请通过项目脚本继承 MinGW 工具路径后执行 Rust 检查：
+
+```powershell
+$env:PATH="$env:LOCALAPPDATA\CodexToolchains\msys2\msys64\mingw64\bin;$env:PATH"
+cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
+cargo check --manifest-path src-tauri/Cargo.toml
+cargo test --manifest-path src-tauri/Cargo.toml
 ```
 
 ## 生产构建
@@ -90,6 +103,4 @@ LocalProvider 只索引用户明确选择的目录，原始图片保持原位且
 - 公共业务只依赖 `PlatformMonitorService` 和 `PlatformWallpaperService`
 - Provider、Scheduler、Wallpaper Core 和 Cache Service 不直接依赖平台原生 API
 
-产品和技术基线以 `docs/REQUIREMENTS.md` 为准。
-
-V2 功能规划见 `docs/REQUIREMENTS_V2_DRAFT.md`；该文件当前为待评审草案，不替代 V1 实施基线。
+V1 产品与技术基线见 `docs/REQUIREMENTS.md`，V2 实现范围与验收项见 `docs/REQUIREMENTS_V2_DRAFT.md`。

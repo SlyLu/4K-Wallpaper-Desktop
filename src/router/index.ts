@@ -2,6 +2,7 @@ import { createRouter, createWebHashHistory } from "vue-router";
 
 import AppShell from "../components/AppShell.vue";
 import CategoriesView from "../views/CategoriesView.vue";
+import CollectionsView from "../views/CollectionsView.vue";
 import DiscoverView from "../views/DiscoverView.vue";
 import DisplaysView from "../views/DisplaysView.vue";
 import FavoritesView from "../views/FavoritesView.vue";
@@ -20,6 +21,7 @@ const router = createRouter({
         { path: "", redirect: "/discover" },
         { path: "discover", component: DiscoverView },
         { path: "categories", component: CategoriesView },
+        { path: "collections", component: CollectionsView },
         { path: "search", component: SearchView },
         { path: "favorites", component: FavoritesView },
         { path: "local", component: LocalView },

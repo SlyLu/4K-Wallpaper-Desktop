@@ -1,5 +1,7 @@
+mod aggregated;
 mod local;
 mod wallhaven;
+mod wikimedia;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -14,6 +16,7 @@ use crate::{
 
 pub use local::LocalProvider;
 pub use wallhaven::WallhavenProvider;
+pub use wikimedia::WikimediaCommonsProvider;
 
 /// Product categories remain stable even when a provider uses different category flags.
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
@@ -90,6 +93,11 @@ pub struct RemoteWallpaper {
     pub purity: String,
     pub tags: Vec<String>,
     pub created_at: Option<String>,
+    pub author: Option<String>,
+    pub license_name: Option<String>,
+    pub license_url: Option<String>,
+    /// Optional thumbnail-derived dHash supports cross-provider pre-display deduplication.
+    pub perceptual_hash: Option<String>,
 }
 
 /// Unified adapter boundary used by services and commands.
@@ -103,8 +111,10 @@ pub trait WallpaperProvider: Send + Sync {
 }
 
 /// Runtime registry routes provider names without leaking concrete adapters into commands.
+#[derive(Clone)]
 pub struct ProviderServices {
     wallhaven: Arc<dyn WallpaperProvider>,
+    wikimedia: Arc<dyn WallpaperProvider>,
     local: Arc<dyn WallpaperProvider>,
 }
 
@@ -115,6 +125,9 @@ impl ProviderServices {
             wallhaven: Arc::new(WallhavenProvider::new(
                 paths.wallpapers_original_dir.clone(),
             )?),
+            wikimedia: Arc::new(WikimediaCommonsProvider::new(
+                paths.wallpapers_original_dir.clone(),
+            )?),
             local: Arc::new(LocalProvider::new(Vec::new())),
         })
     }
@@ -123,10 +136,18 @@ impl ProviderServices {
     pub fn get(&self, provider: &str) -> AppResult<Arc<dyn WallpaperProvider>> {
         match provider {
             "wallhaven" => Ok(Arc::clone(&self.wallhaven)),
+            "wikimedia_commons" => Ok(Arc::clone(&self.wikimedia)),
             "local" => Ok(Arc::clone(&self.local)),
             _ => Err(AppError::Provider(format!(
                 "unsupported wallpaper provider: {provider}"
             ))),
         }
     }
+
+    /// Returns every built-in online adapter for aggregated search and refresh.
+    pub fn online(&self) -> Vec<Arc<dyn WallpaperProvider>> {
+        vec![Arc::clone(&self.wallhaven), Arc::clone(&self.wikimedia)]
+    }
 }
+#[cfg(not(test))]
+pub use aggregated::AggregatedProviderService;

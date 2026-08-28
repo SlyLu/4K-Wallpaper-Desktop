@@ -26,6 +26,10 @@ pub struct AppConfig {
     pub theme_secondary: String,
     pub theme_background: String,
     pub theme_surface: String,
+    pub theme_pack: String,
+    pub theme_background_image: Option<String>,
+    pub theme_background_fit: String,
+    pub theme_background_overlay: f32,
 }
 
 impl Default for AppConfig {
@@ -50,6 +54,10 @@ impl Default for AppConfig {
             theme_secondary: "#4eb2f4".into(),
             theme_background: "#07111d".into(),
             theme_surface: "#0a1b29".into(),
+            theme_pack: "classic".into(),
+            theme_background_image: None,
+            theme_background_fit: "fill".into(),
+            theme_background_overlay: 0.35,
         }
     }
 }
@@ -91,6 +99,8 @@ mod tests {
         assert!(config.local_directories.is_empty());
         assert_eq!(config.theme_mode, "dark");
         assert_eq!(config.theme_effect, "solid");
+        assert_eq!(config.theme_pack, "classic");
+        assert_eq!(config.theme_background_fit, "fill");
     }
 
     #[test]

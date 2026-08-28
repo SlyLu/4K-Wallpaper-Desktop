@@ -1,6 +1,6 @@
 [package]
 name = "wallpaper-desktop"
-version = "0.1.14"
+version = "0.2.0"
 description = "Local-first 4K wallpaper desktop application"
 authors = ["4K Wallpaper Desktop contributors"]
 edition = "2024"

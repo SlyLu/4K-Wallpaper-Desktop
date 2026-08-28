@@ -14,6 +14,7 @@ import {
 } from "../api/catalog";
 import type { FitMode } from "../models/image";
 import type { CatalogQuery, ProviderQuery, WallpaperRecord } from "../models/wallpaper";
+import { queryCollectionWallpapers } from "../api/collections";
 
 export const useWallpaperStore = defineStore("wallpaper", () => {
   const wallpapers = ref<WallpaperRecord[]>([]);
@@ -28,6 +29,7 @@ export const useWallpaperStore = defineStore("wallpaper", () => {
   const syncing = ref(false);
   const error = ref("");
   const lastQuery = ref<CatalogQuery>({ page: 1, pageSize: 30 });
+  const activeCollectionId = ref<number>();
 
   const selectedCount = computed(() => selectedIds.value.length);
   const bulkSelectedCount = computed(() => Object.keys(bulkSelections.value).length);
@@ -37,9 +39,30 @@ export const useWallpaperStore = defineStore("wallpaper", () => {
     loading.value = true;
     error.value = "";
     lastQuery.value = { page: 1, pageSize: 30, ...filters };
+    activeCollectionId.value = undefined;
     try {
       releaseThumbnails();
       const result = await queryCatalog(lastQuery.value);
+      wallpapers.value = result.items;
+      total.value = result.total;
+      page.value = result.page;
+      pageSize.value = result.pageSize;
+      await Promise.all(result.items.map(loadCachedThumbnail));
+    } catch (cause) {
+      error.value = String(cause);
+    } finally {
+      loading.value = false;
+    }
+  }
+
+  /** Loads one manual or smart collection while retaining its paging context. */
+  async function queryCollection(collectionId: number, targetPage = 1): Promise<void> {
+    loading.value = true;
+    error.value = "";
+    activeCollectionId.value = collectionId;
+    try {
+      releaseThumbnails();
+      const result = await queryCollectionWallpapers(collectionId, targetPage, pageSize.value || 60);
       wallpapers.value = result.items;
       total.value = result.total;
       page.value = result.page;
@@ -62,7 +85,9 @@ export const useWallpaperStore = defineStore("wallpaper", () => {
     const totalPages = Math.max(1, Math.ceil(total.value / pageSize.value));
     const requestedPage = Number.isFinite(targetPage) ? Math.trunc(targetPage) : 1;
     const safePage = Math.min(Math.max(1, requestedPage), totalPages);
-    return query({ ...lastQuery.value, page: safePage });
+    return activeCollectionId.value
+      ? queryCollection(activeCollectionId.value, safePage)
+      : query({ ...lastQuery.value, page: safePage });
   }
 
   /** Fetches metadata only, then refreshes the local catalog using active filters. */
@@ -153,15 +178,15 @@ export const useWallpaperStore = defineStore("wallpaper", () => {
     bytes: ArrayBuffer;
   }> {
     const wallpaper = await downloadWallpaper(wallpaperId);
-    replaceWallpaper(wallpaper);
-    const bytes = await getWallpaperOriginalBytes(wallpaperId);
+    replaceWallpaper(wallpaper, wallpaperId);
+    const bytes = await getWallpaperOriginalBytes(wallpaper.id);
     return { wallpaper, bytes };
   }
 
   /** Applies one catalog item through the complete Rust Core workflow. */
   async function apply(wallpaperId: number, monitorId: string, fitMode: FitMode): Promise<void> {
-    await applyCatalogWallpaper(wallpaperId, monitorId, fitMode);
-    replaceWallpaper(await downloadWallpaper(wallpaperId));
+    const result = await applyCatalogWallpaper(wallpaperId, monitorId, fitMode);
+    replaceWallpaper(result.wallpaper, wallpaperId);
   }
 
   /** Toggles favorite state and keeps list/detail views consistent. */
@@ -209,11 +234,13 @@ export const useWallpaperStore = defineStore("wallpaper", () => {
   }
 
   /** Replaces one immutable catalog record returned by the backend. */
-  function replaceWallpaper(updated: WallpaperRecord): void {
-    wallpapers.value = wallpapers.value.map((wallpaper) =>
-      wallpaper.id === updated.id ? updated : wallpaper,
-    );
-    if (activeWallpaper.value?.id === updated.id) activeWallpaper.value = updated;
+  function replaceWallpaper(updated: WallpaperRecord, replacedId = updated.id): void {
+    wallpapers.value = wallpapers.value
+      .filter((wallpaper) => wallpaper.id !== replacedId || replacedId === updated.id)
+      .map((wallpaper) => wallpaper.id === updated.id ? updated : wallpaper);
+    if (activeWallpaper.value?.id === replacedId || activeWallpaper.value?.id === updated.id) {
+      activeWallpaper.value = updated;
+    }
   }
 
   /** Resolves cache bytes only when Rust reports a trusted local thumbnail. */
@@ -249,6 +276,7 @@ export const useWallpaperStore = defineStore("wallpaper", () => {
     syncing,
     error,
     query,
+    queryCollection,
     load,
     goToPage,
     syncOnline,

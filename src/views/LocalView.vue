@@ -5,11 +5,12 @@ import { onBeforeUnmount, onMounted, ref } from "vue";
 
 import {
   importLocalPaths,
+  listDuplicateFileGroups,
   pruneMissingLocalWallpapers,
   scanLocalDirectory,
 } from "../api/catalog";
 import WallpaperGrid from "../components/WallpaperGrid.vue";
-import type { CatalogQuery } from "../models/wallpaper";
+import type { CatalogQuery, DuplicateFileGroup, WallpaperRecord } from "../models/wallpaper";
 import { useSettingsStore } from "../stores/settings";
 import { useWallpaperStore } from "../stores/wallpaper";
 
@@ -21,6 +22,8 @@ const settingsStore = useSettingsStore();
 const source = ref<GallerySource>("all");
 const nameFilter = ref("");
 const category = ref<GalleryCategory>("all");
+const availability = ref<"all" | WallpaperRecord["fileAvailability"]>("all");
+const duplicateGroups = ref<DuplicateFileGroup[]>([]);
 const operationMessage = ref("");
 const scanning = ref(false);
 const refreshing = ref(false);
@@ -30,14 +33,20 @@ let unlistenDragDrop: (() => void) | undefined;
 /** Builds a device-gallery query that keeps local imports and online downloads distinct. */
 function loadGallery(): Promise<void> {
   const query: CatalogQuery = {
-    locallyAvailable: true,
+    fileBacked: true,
     name: nameFilter.value.trim() || undefined,
     category: category.value,
     pageSize: 100,
   };
-  if (source.value === "local") query.provider = "local";
-  if (source.value === "online") query.provider = "wallhaven";
+  if (source.value === "local") query.storageKind = "user_source";
+  if (source.value === "online") query.storageKind = "managed_download";
+  if (availability.value !== "all") query.fileAvailability = availability.value;
   return wallpaperStore.query(query);
+}
+
+/** Refreshes duplicate-copy review data independently from the paginated gallery. */
+async function loadDuplicates(): Promise<void> {
+  duplicateGroups.value = await listDuplicateFileGroups();
 }
 
 /** Opens the native directory picker and indexes supported files without moving them. */
@@ -48,7 +57,7 @@ async function addDirectory(): Promise<void> {
   operationMessage.value = "正在扫描、校验并生成缩略图…";
   try {
     const count = await scanLocalDirectory(selected);
-    await Promise.all([settingsStore.load(), loadGallery()]);
+    await Promise.all([settingsStore.load(), loadGallery(), loadDuplicates()]);
     operationMessage.value = `扫描完成，已索引 ${count} 张图片；原始文件保持原位`;
   } catch (cause) {
     operationMessage.value = String(cause);
@@ -73,8 +82,8 @@ async function refreshGallery(): Promise<void> {
       }
     }
     const removed = await pruneMissingLocalWallpapers();
-    await loadGallery();
-    operationMessage.value = `刷新完成：索引 ${indexed} 张，清理 ${removed} 条失效记录${failed ? `，${failed} 个目录暂不可访问` : ""}`;
+    await Promise.all([loadGallery(), loadDuplicates()]);
+    operationMessage.value = `刷新完成：检查 ${indexed} 张，更新 ${removed} 条文件状态${failed ? `，${failed} 个目录暂不可访问` : ""}`;
   } catch (cause) {
     operationMessage.value = String(cause);
   } finally {
@@ -89,7 +98,7 @@ async function importDropped(paths: string[]): Promise<void> {
   operationMessage.value = "正在导入拖入的图片…";
   try {
     const count = await importLocalPaths(paths);
-    await Promise.all([settingsStore.load(), loadGallery()]);
+    await Promise.all([settingsStore.load(), loadGallery(), loadDuplicates()]);
     operationMessage.value = `已导入 ${count} 张有效图片`;
   } catch (cause) {
     operationMessage.value = String(cause);
@@ -99,7 +108,7 @@ async function importDropped(paths: string[]): Promise<void> {
 }
 
 onMounted(async () => {
-  await Promise.all([settingsStore.load(), loadGallery()]);
+  await Promise.all([settingsStore.load(), loadGallery(), loadDuplicates()]);
   unlistenDragDrop = await getCurrentWebview().onDragDropEvent(({ payload }) => {
     if (payload.type === "enter") dragActive.value = true;
     if (payload.type === "leave") dragActive.value = false;
@@ -128,6 +137,7 @@ onBeforeUnmount(() => unlistenDragDrop?.());
     <form class="gallery-filters" @submit.prevent="loadGallery">
       <input v-model="nameFilter" placeholder="按图片名称筛选" />
       <select v-model="category"><option value="all">全部分类</option><option value="nature">自然</option><option value="anime">动漫</option><option value="people">人物</option></select>
+      <select v-model="availability"><option value="all">全部文件状态</option><option value="available">本机可用</option><option value="temporarily_unavailable">暂不可用</option><option value="missing">已缺失</option></select>
       <button type="submit" class="secondary">筛选</button>
     </form>
   </section>
@@ -140,4 +150,11 @@ onBeforeUnmount(() => unlistenDragDrop?.());
   <p v-if="operationMessage" class="inline-status">{{ operationMessage }}</p>
   <div class="section-title"><h2>{{ source === 'local' ? '本地导入' : source === 'online' ? '在线下载' : '全部图库' }}</h2><p>{{ wallpaperStore.total }} 张</p></div>
   <WallpaperGrid management bulk-mode="gallery" empty-text="拖入图片、扫描目录，或先从在线资源下载高清原图。" />
+  <section v-if="duplicateGroups.length" class="duplicate-panel">
+    <div class="section-title"><h2>重复文件</h2><p>{{ duplicateGroups.length }} 组</p></div>
+    <details v-for="group in duplicateGroups" :key="group.contentHash">
+      <summary>{{ group.copies.length }} 个相同内容副本 · {{ group.contentHash.slice(0, 12) }}</summary>
+      <ul><li v-for="copy in group.copies" :key="copy.path"><span>{{ copy.path }}</span><small>{{ copy.storageKind }} · {{ copy.availability }}</small></li></ul>
+    </details>
+  </section>
 </template>

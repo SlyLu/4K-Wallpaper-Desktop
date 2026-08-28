@@ -1,13 +1,26 @@
 import { invoke } from "@tauri-apps/api/core";
 
-import type { FitMode, ProcessedImage } from "../models/image";
+import type { FitMode, ProcessedImage, SpanningSliceImage } from "../models/image";
+import type { MonitorLayout } from "../models/monitor";
 import type {
   CatalogQuery,
+  DuplicateFileGroup,
   ProviderQuery,
   ThumbnailData,
   WallpaperPage,
   WallpaperRecord,
 } from "../models/wallpaper";
+
+export interface AppliedWallpaper {
+  processed: ProcessedImage;
+  wallpaper: WallpaperRecord;
+}
+
+export interface SpanningApplyResult {
+  layout: MonitorLayout;
+  slices: SpanningSliceImage[];
+  wallpaper: WallpaperRecord;
+}
 
 /** Loads one bounded page from the local SQLite catalog. */
 export function listPresetWallpapers(page = 1, pageSize = 12): Promise<WallpaperPage> {
@@ -23,7 +36,12 @@ export function queryCatalog(query: CatalogQuery): Promise<WallpaperPage> {
   return invoke<WallpaperPage>("query_catalog", { query });
 }
 
-/** Synchronizes one bounded Wallhaven metadata page without downloading originals. */
+/** Lists identical file copies for review without deleting user-owned originals. */
+export function listDuplicateFileGroups(): Promise<DuplicateFileGroup[]> {
+  return invoke<DuplicateFileGroup[]>("list_duplicate_file_groups");
+}
+
+/** Synchronizes one bounded page from every enabled online provider without downloading originals. */
 export function syncCatalog(query: ProviderQuery): Promise<number> {
   return invoke<number>("sync_catalog", { query });
 }
@@ -48,7 +66,7 @@ export function removeLocalWallpaper(wallpaperId: number): Promise<void> {
   return invoke("remove_local_wallpaper", { wallpaperId });
 }
 
-/** Removes LocalProvider indexes whose source files no longer exist. */
+/** Reconciles local files as available, temporarily unavailable, or confirmed missing. */
 export function pruneMissingLocalWallpapers(): Promise<number> {
   return invoke<number>("prune_missing_local_wallpapers");
 }
@@ -83,12 +101,25 @@ export function applyCatalogWallpaper(
   wallpaperId: number,
   monitorId: string,
   fitMode: FitMode,
-): Promise<ProcessedImage> {
-  return invoke<ProcessedImage>("apply_catalog_wallpaper", {
+): Promise<AppliedWallpaper> {
+  return invoke<AppliedWallpaper>("apply_catalog_wallpaper", {
     wallpaperId,
     monitorId,
     fitMode,
   });
+}
+
+/** Applies a virtual-canvas render as one native slice per attached monitor. */
+export function applySpanningWallpaper(
+  wallpaperId: number,
+  fitMode: "fill" | "fit_to_span",
+): Promise<SpanningApplyResult> {
+  return invoke<SpanningApplyResult>("apply_spanning_wallpaper", { wallpaperId, fitMode });
+}
+
+/** Restores the per-monitor paths captured before spanning mode was enabled. */
+export function disableSpanningWallpaper(): Promise<number> {
+  return invoke<number>("disable_spanning_wallpaper");
 }
 
 /** Persists favorite state and returns refreshed metadata. */

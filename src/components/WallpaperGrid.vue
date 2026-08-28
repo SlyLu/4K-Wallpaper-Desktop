@@ -4,11 +4,13 @@ import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { useMonitorStore } from "../stores/monitor";
 import { useWallpaperStore } from "../stores/wallpaper";
 import type { WallpaperRecord } from "../models/wallpaper";
+import { addCollectionWallpapers, removeCollectionWallpapers } from "../api/collections";
 
 const props = defineProps<{
   emptyText?: string;
   management?: boolean;
-  bulkMode?: "dislike" | "index" | "gallery";
+  bulkMode?: "dislike" | "index" | "gallery" | "collection-add" | "collection-remove";
+  collectionId?: number;
 }>();
 const wallpaperStore = useWallpaperStore();
 const monitorStore = useMonitorStore();
@@ -18,7 +20,23 @@ const currentPageBulkSelected = computed(() =>
   wallpaperStore.wallpapers.length > 0
   && wallpaperStore.wallpapers.every((wallpaper) => Boolean(wallpaperStore.bulkSelections[wallpaper.id])),
 );
-const bulkActionLabel = computed(() => props.bulkMode === "gallery" ? "从图库移除" : props.bulkMode === "dislike" ? "标记不喜欢" : "移除索引");
+const bulkActionLabel = computed(() => ({
+  gallery: "从图库移除",
+  dislike: "标记不喜欢",
+  index: "移除索引",
+  "collection-add": "加入集合",
+  "collection-remove": "移出集合",
+}[props.bulkMode ?? "index"]));
+
+/** Translates persisted lifecycle state into a concise card label. */
+function availabilityLabel(wallpaper: WallpaperRecord): string {
+  return {
+    remote: "在线元数据",
+    available: wallpaper.storageKind === "user_source" ? "本地源文件" : "已下载",
+    temporarily_unavailable: "暂不可用",
+    missing: "文件已缺失",
+  }[wallpaper.fileAvailability];
+}
 
 watch(() => wallpaperStore.page, (page) => { jumpPage.value = page; }, { immediate: true });
 
@@ -81,6 +99,17 @@ async function changePage(targetPage: number): Promise<void> {
 /** Executes one explicit batch after explaining whether files or only indexes are affected. */
 async function executeBulk(): Promise<void> {
   if (!props.bulkMode || !wallpaperStore.bulkSelectedCount) return;
+  if (props.bulkMode === "collection-add" || props.bulkMode === "collection-remove") {
+    if (!props.collectionId) return;
+    const ids = Object.keys(wallpaperStore.bulkSelections).map(Number);
+    const changed = props.bulkMode === "collection-add"
+      ? await addCollectionWallpapers(props.collectionId, ids)
+      : await removeCollectionWallpapers(props.collectionId, ids);
+    wallpaperStore.clearBulkSelected();
+    if (props.bulkMode === "collection-remove") await wallpaperStore.queryCollection(props.collectionId);
+    actionMessage.value = `已${props.bulkMode === "collection-add" ? "加入" : "移出"} ${changed} 张壁纸`;
+    return;
+  }
   const explanation = props.bulkMode === "gallery"
     ? "在线下载会删除应用缓存；本地导入只从图库隐藏，不删除磁盘原文件。"
     : "所选资源将从列表隐藏，后续刷新或扫描不会重新展示；本地原始文件不会被删除。";
@@ -144,7 +173,7 @@ onBeforeUnmount(() => wallpaperStore.clearBulkSelected());
       </div>
       <div class="card-meta">
         <strong>{{ wallpaper.name }}</strong>
-        <span>{{ wallpaper.width }} × {{ wallpaper.height }} · {{ wallpaper.provider }}</span>
+        <span>{{ wallpaper.width }} × {{ wallpaper.height }} · {{ wallpaper.provider }} · {{ availabilityLabel(wallpaper) }}<template v-if="wallpaper.fileCopyCount > 1"> · {{ wallpaper.fileCopyCount }} 个副本</template></span>
       </div>
     </article>
   </div>

@@ -1,7 +1,7 @@
 use std::{
     fs,
     fs::File,
-    io::{BufReader, BufWriter, Read},
+    io::{BufReader, BufWriter, Cursor, Read},
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
 };
@@ -14,9 +14,13 @@ use image::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::error::{AppError, AppResult};
+use crate::{
+    error::{AppError, AppResult},
+    span::MonitorLayout,
+};
 
 const MAX_FILE_BYTES: u64 = 256 * 1024 * 1024;
+const MAX_THUMBNAIL_BYTES: usize = 8 * 1024 * 1024;
 const MAX_IMAGE_SIDE: u32 = 16_384;
 const MAX_IMAGE_PIXELS: u64 = 100_000_000;
 const MAX_DECODE_ALLOC: u64 = 512 * 1024 * 1024;
@@ -37,6 +41,8 @@ pub struct ImageMetadata {
     pub mime_type: &'static str,
     pub format: &'static str,
     pub sha256: String,
+    /// Difference hash remains stable across ordinary resize and encoding changes.
+    pub perceptual_hash: String,
 }
 
 /// V1 display adaptation modes defined by the product requirements.
@@ -94,6 +100,35 @@ pub struct ProcessedImage {
     pub cache_hit: bool,
 }
 
+/// V2 modes adapt one source against the whole virtual canvas before per-screen cropping.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SpanFitMode {
+    Fill,
+    FitToSpan,
+}
+
+impl SpanFitMode {
+    /// Stable cache key keeps display labels out of processed filenames.
+    pub fn slug(self) -> &'static str {
+        match self {
+            Self::Fill => "fill",
+            Self::FitToSpan => "fit-to-span",
+        }
+    }
+}
+
+/// One generated image assigned to its corresponding physical display.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpanningSliceImage {
+    pub system_monitor_id: String,
+    pub path: String,
+    pub width: u32,
+    pub height: u32,
+    pub cache_hit: bool,
+}
+
 /// Pure geometry plan kept separate from pixel work for exhaustive unit testing.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct AdaptationPlan {
@@ -126,6 +161,18 @@ impl ImageProcessor {
     /// Fully decodes an image under limits and returns content-derived metadata.
     pub fn inspect(&self, path: &Path) -> AppResult<ImageMetadata> {
         inspect_image(path)
+    }
+
+    /// Samples a small decoded preview to choose readable foreground tokens for UI backgrounds.
+    pub fn average_luminance(&self, path: &Path) -> AppResult<f32> {
+        let (image, _) = load_validated_image(path)?;
+        let sample = image.thumbnail_exact(64, 64).to_rgb8();
+        let total = sample.pixels().fold(0_f64, |sum, pixel| {
+            let [red, green, blue] = pixel.0;
+            sum + (f64::from(red) * 0.2126 + f64::from(green) * 0.7152 + f64::from(blue) * 0.0722)
+                / 255.0
+        });
+        Ok((total / f64::from(sample.width() * sample.height())) as f32)
     }
 
     /// Produces a proportional JPEG thumbnail and reuses it by source hash and dimensions.
@@ -198,12 +245,116 @@ impl ImageProcessor {
             cache_hit,
         })
     }
+
+    /// Renders against the virtual desktop once, then emits deterministic per-monitor slices.
+    pub fn prepare_spanning_slices(
+        &self,
+        path: &Path,
+        layout: &MonitorLayout,
+        mode: SpanFitMode,
+    ) -> AppResult<Vec<SpanningSliceImage>> {
+        validate_output_dimensions(layout.width, layout.height)?;
+        let (image, metadata) = load_validated_image(path)?;
+        let plan = calculate_adaptation_plan(
+            metadata.width,
+            metadata.height,
+            layout.width,
+            layout.height,
+            match mode {
+                SpanFitMode::Fill => FitMode::Fill,
+                SpanFitMode::FitToSpan => FitMode::Fit,
+            },
+        )?;
+        let canvas = render_adaptation(&image, layout.width, layout.height, plan);
+        fs::create_dir_all(&self.processed_directory)?;
+        layout
+            .slices
+            .iter()
+            .enumerate()
+            .map(|(index, slice)| {
+                if slice.canvas_x.saturating_add(slice.width) > layout.width
+                    || slice.canvas_y.saturating_add(slice.height) > layout.height
+                {
+                    return Err(AppError::Image(format!(
+                        "monitor slice is outside virtual canvas: {}",
+                        slice.system_monitor_id
+                    )));
+                }
+                let target = self.processed_directory.join(format!(
+                    "span-{}-{}-{}-{}.jpg",
+                    metadata.sha256,
+                    layout.layout_hash,
+                    mode.slug(),
+                    index
+                ));
+                let cache_hit = target.is_file();
+                if !cache_hit {
+                    let cropped = image::imageops::crop_imm(
+                        &canvas,
+                        slice.canvas_x,
+                        slice.canvas_y,
+                        slice.width,
+                        slice.height,
+                    )
+                    .to_image();
+                    write_jpeg_atomically(&cropped, &target, PROCESSED_JPEG_QUALITY)?;
+                }
+                Ok(SpanningSliceImage {
+                    system_monitor_id: slice.system_monitor_id.clone(),
+                    path: target.display().to_string(),
+                    width: slice.width,
+                    height: slice.height,
+                    cache_hit,
+                })
+            })
+            .collect()
+    }
 }
 
 /// Public Core entry point reused by LocalProvider so format and safety rules stay identical.
 pub fn inspect_image(path: &Path) -> AppResult<ImageMetadata> {
     let (_, metadata) = load_validated_image(path)?;
     Ok(metadata)
+}
+
+/// Computes a bounded thumbnail dHash without persisting untrusted provider bytes.
+pub fn perceptual_hash_bytes(bytes: &[u8]) -> AppResult<String> {
+    if bytes.is_empty() || bytes.len() > MAX_THUMBNAIL_BYTES {
+        return Err(AppError::Image(format!(
+            "thumbnail size must be between 1 byte and {MAX_THUMBNAIL_BYTES} bytes"
+        )));
+    }
+    let mut reader = image::ImageReader::new(Cursor::new(bytes)).with_guessed_format()?;
+    reader.limits(image_limits());
+    let image = reader.decode()?;
+    let (width, height) = image.dimensions();
+    validate_source_dimensions(width, height)?;
+    Ok(perceptual_hash(&image))
+}
+
+/// Combines dHash and average-hash bits to avoid treating unrelated flat images as identical.
+fn perceptual_hash(image: &DynamicImage) -> String {
+    let sample = image.resize_exact(9, 8, FilterType::Lanczos3).to_luma8();
+    let mut difference_hash = 0_u64;
+    for y in 0..8 {
+        for x in 0..8 {
+            difference_hash <<= 1;
+            if sample.get_pixel(x, y)[0] > sample.get_pixel(x + 1, y)[0] {
+                difference_hash |= 1;
+            }
+        }
+    }
+    let average_sample = image.resize_exact(8, 8, FilterType::Lanczos3).to_luma8();
+    let average = average_sample
+        .pixels()
+        .map(|pixel| u64::from(pixel[0]))
+        .sum::<u64>()
+        / 64;
+    let mut average_hash = 0_u64;
+    for pixel in average_sample.pixels() {
+        average_hash = (average_hash << 1) | u64::from(u64::from(pixel[0]) >= average);
+    }
+    format!("{difference_hash:016x}{average_hash:016x}")
 }
 
 /// Opens and decodes one supported image with strict file, dimension, and allocation limits.
@@ -231,6 +382,7 @@ fn load_validated_image(path: &Path) -> AppResult<(DynamicImage, ImageMetadata)>
     let (width, height) = image.dimensions();
     validate_source_dimensions(width, height)?;
     let sha256 = hash_file(path)?;
+    let perceptual_hash = perceptual_hash(&image);
     Ok((
         image,
         ImageMetadata {
@@ -241,6 +393,7 @@ fn load_validated_image(path: &Path) -> AppResult<(DynamicImage, ImageMetadata)>
             mime_type,
             format: format_name,
             sha256,
+            perceptual_hash,
         },
     ))
 }
@@ -493,8 +646,10 @@ mod tests {
     use image::{DynamicImage, ImageFormat, Rgb, RgbImage};
 
     use super::{
-        FitMode, ImageProcessor, calculate_adaptation_plan, inspect_image, reduced_aspect_ratio,
+        FitMode, ImageProcessor, SpanFitMode, calculate_adaptation_plan, inspect_image,
+        reduced_aspect_ratio,
     };
+    use crate::{models::MonitorInfo, span::calculate_monitor_layout};
 
     #[test]
     fn calculates_fill_and_fit_for_ultrawide_display() -> Result<(), Box<dyn std::error::Error>> {
@@ -578,6 +733,29 @@ mod tests {
     }
 
     #[test]
+    fn perceptual_hash_survives_common_encoding_changes() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let directory = tempfile::tempdir()?;
+        let source = RgbImage::from_fn(640, 360, |x, y| {
+            Rgb([
+                ((x * 255) / 639) as u8,
+                ((y * 255) / 359) as u8,
+                (((x + y) * 255) / 998) as u8,
+            ])
+        });
+        let png = directory.path().join("same.png");
+        let jpeg = directory.path().join("same.jpg");
+        source.save_with_format(&png, ImageFormat::Png)?;
+        source.save_with_format(&jpeg, ImageFormat::Jpeg)?;
+
+        assert_eq!(
+            inspect_image(&png)?.perceptual_hash,
+            inspect_image(&jpeg)?.perceptual_hash
+        );
+        Ok(())
+    }
+
+    #[test]
     fn generates_all_modes_thumbnail_and_reuses_cache() -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempfile::tempdir()?;
         let source = directory.path().join("source.png");
@@ -603,6 +781,51 @@ mod tests {
         assert!(!first.cache_hit);
         assert!(second.cache_hit);
         assert_eq!(std::fs::read(&source)?, original);
+        Ok(())
+    }
+
+    #[test]
+    fn renders_virtual_canvas_into_layout_specific_slices() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let directory = tempfile::tempdir()?;
+        let source = directory.path().join("span-source.png");
+        RgbImage::from_fn(400, 100, |x, _| Rgb([(x % 255) as u8, 80, 140])).save(&source)?;
+        let original = std::fs::read(&source)?;
+        let processor = ImageProcessor::new(
+            directory.path().join("thumbnails"),
+            directory.path().join("processed"),
+        );
+        let layout = calculate_monitor_layout(&[
+            MonitorInfo {
+                system_monitor_id: "left".into(),
+                name: "Left".into(),
+                width: 200,
+                height: 100,
+                position_x: -200,
+                position_y: 0,
+                primary: false,
+            },
+            MonitorInfo {
+                system_monitor_id: "right".into(),
+                name: "Right".into(),
+                width: 200,
+                height: 100,
+                position_x: 0,
+                position_y: 0,
+                primary: true,
+            },
+        ])?;
+        let first = processor.prepare_spanning_slices(&source, &layout, SpanFitMode::Fill)?;
+        let second = processor.prepare_spanning_slices(&source, &layout, SpanFitMode::Fill)?;
+
+        assert_eq!(first.len(), 2);
+        assert!(
+            first
+                .iter()
+                .all(|slice| image::image_dimensions(&slice.path).ok() == Some((200, 100)))
+        );
+        assert!(second.iter().all(|slice| slice.cache_hit));
+        assert_eq!(std::fs::read(source)?, original);
         Ok(())
     }
 

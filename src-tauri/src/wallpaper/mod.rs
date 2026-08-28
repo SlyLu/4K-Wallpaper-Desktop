@@ -104,7 +104,7 @@ impl<'a> WallpaperService<'a> {
             .set_wallpaper_for_monitor(system_monitor_id, Path::new(&processed.path))?;
         if record_manual_history {
             self.database
-                .record_manual_history(wallpaper_id, system_monitor_id)?;
+                .record_manual_history(wallpaper.id, system_monitor_id)?;
         }
         Ok(processed)
     }
@@ -165,6 +165,10 @@ fn record_to_remote(wallpaper: &WallpaperRecord) -> RemoteWallpaper {
         purity: wallpaper.purity.clone(),
         tags: wallpaper.tags.clone(),
         created_at: wallpaper.created_at.clone(),
+        author: None,
+        license_name: None,
+        license_url: None,
+        perceptual_hash: None,
     }
 }
 
@@ -183,7 +187,10 @@ mod tests {
         image_processing::{FitMode, ImageProcessor},
         models::{MonitorInfo, NewWallpaper},
         paths::AppPaths,
-        platform::{PlatformMonitorService, PlatformServices, PlatformWallpaperService},
+        platform::{
+            PlatformEnvironmentService, PlatformMonitorService, PlatformServices,
+            PlatformWallpaperService, RuntimeEnvironment,
+        },
         provider::ProviderServices,
     };
 
@@ -207,6 +214,14 @@ mod tests {
         applied: Arc<Mutex<Vec<String>>>,
     }
 
+    struct MockEnvironment;
+
+    impl PlatformEnvironmentService for MockEnvironment {
+        fn runtime_environment(&self) -> crate::error::AppResult<RuntimeEnvironment> {
+            Ok(RuntimeEnvironment::default())
+        }
+    }
+
     impl PlatformWallpaperService for MockWallpaper {
         fn set_wallpaper_for_all(&self, image_path: &Path) -> crate::error::AppResult<()> {
             self.applied
@@ -222,6 +237,13 @@ mod tests {
             image_path: &Path,
         ) -> crate::error::AppResult<()> {
             self.set_wallpaper_for_all(image_path)
+        }
+
+        fn get_wallpaper_for_monitor(
+            &self,
+            _monitor_id: &str,
+        ) -> crate::error::AppResult<std::path::PathBuf> {
+            Ok(std::path::PathBuf::from("mock-current.jpg"))
         }
     }
 
@@ -266,9 +288,13 @@ mod tests {
             category: "local".into(),
             purity: "local".into(),
             hash: None,
+            perceptual_hash: None,
             download_status: "downloaded".into(),
             preset: false,
             created_at: None,
+            author: None,
+            license_name: None,
+            license_url: None,
             synced_at: "2026-08-24T00:00:00Z".into(),
             tags: Vec::new(),
         }])?;
@@ -280,6 +306,7 @@ mod tests {
             wallpaper: Arc::new(MockWallpaper {
                 applied: Arc::clone(&applied),
             }),
+            environment: Arc::new(MockEnvironment),
         };
         let providers = ProviderServices::new(&paths)?;
         let images = ImageProcessor::new(paths.thumbnails_dir, paths.processed_dir);

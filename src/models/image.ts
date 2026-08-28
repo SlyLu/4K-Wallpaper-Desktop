@@ -8,6 +8,7 @@ export interface ImageMetadata {
   mimeType: string;
   format: string;
   sha256: string;
+  perceptualHash: string;
 }
 
 export interface ProcessedImage {
@@ -15,5 +16,13 @@ export interface ProcessedImage {
   width: number;
   height: number;
   sourceSha256: string;
+  cacheHit: boolean;
+}
+
+export interface SpanningSliceImage {
+  systemMonitorId: string;
+  path: string;
+  width: number;
+  height: number;
   cacheHit: boolean;
 }

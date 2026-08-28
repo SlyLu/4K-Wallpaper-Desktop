@@ -19,13 +19,18 @@ const systemTheme = window.matchMedia("(prefers-color-scheme: light)");
 
 /** Reapplies system-following themes when Windows or macOS appearance changes. */
 function handleSystemThemeChange(): void {
-  if (settingsStore.settings?.themeMode === "system") applyTheme(settingsStore.settings);
+  if (settingsStore.settings?.themeMode === "system") applyActiveTheme(settingsStore.settings);
+}
+
+/** Applies the manifest and currently loaded local background as one visual snapshot. */
+function applyActiveTheme(settings = settingsStore.settings): void {
+  if (settings) applyTheme(settings, settingsStore.backgroundUrl, settingsStore.backgroundLuminance);
 }
 
 watch(
-  () => settingsStore.settings,
-  (settings) => {
-    if (settings) applyTheme(settings);
+  () => [settingsStore.settings, settingsStore.backgroundUrl, settingsStore.backgroundLuminance] as const,
+  ([settings]) => {
+    applyActiveTheme(settings);
   },
   { deep: true },
 );
@@ -33,6 +38,7 @@ watch(
 const navigation = [
   ["/discover", "发现", "D"],
   ["/categories", "分类", "C"],
+  ["/collections", "集合", "G"],
   ["/search", "搜索", "S"],
   ["/favorites", "收藏", "F"],
   ["/local", "图库", "L"],

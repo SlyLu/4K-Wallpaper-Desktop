@@ -2,6 +2,20 @@ use std::{path::Path, sync::Arc};
 
 use crate::{error::AppResult, models::MonitorInfo};
 
+/// Platform-neutral signals used only by declarative scheduler pause rules.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RuntimeEnvironment {
+    pub on_battery: bool,
+    pub fullscreen_app: bool,
+    pub iso_weekday: u8,
+    pub local_minutes: u16,
+}
+
+pub trait PlatformEnvironmentService: Send + Sync {
+    /// Captures transient power and foreground-window state without persisting app activity.
+    fn runtime_environment(&self) -> AppResult<RuntimeEnvironment>;
+}
+
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(target_os = "windows")]
@@ -25,6 +39,9 @@ pub trait PlatformWallpaperService: Send + Sync {
     fn set_wallpaper_for_all(&self, image_path: &Path) -> AppResult<()>;
     fn set_wallpaper_for_monitor(&self, monitor_id: &str, image_path: &Path) -> AppResult<()>;
 
+    /// Captures the current native assignment so spanning mode can roll back atomically.
+    fn get_wallpaper_for_monitor(&self, monitor_id: &str) -> AppResult<std::path::PathBuf>;
+
     /// Restores platform-managed assignments after an OS workspace or desktop transition.
     fn reconcile_wallpapers(&self) -> AppResult<usize> {
         Ok(0)
@@ -36,6 +53,7 @@ pub struct PlatformServices {
     pub platform_name: &'static str,
     pub monitors: Arc<dyn PlatformMonitorService>,
     pub wallpaper: Arc<dyn PlatformWallpaperService>,
+    pub environment: Arc<dyn PlatformEnvironmentService>,
 }
 
 /// Selects one platform implementation at the composition root only.
@@ -46,6 +64,7 @@ pub fn create_platform_services() -> AppResult<PlatformServices> {
         return Ok(PlatformServices {
             platform_name: "Windows",
             monitors: adapter.clone(),
+            environment: adapter.clone(),
             wallpaper: adapter,
         });
     }
@@ -56,6 +75,7 @@ pub fn create_platform_services() -> AppResult<PlatformServices> {
         return Ok(PlatformServices {
             platform_name: "macOS",
             monitors: adapter.clone(),
+            environment: adapter.clone(),
             wallpaper: adapter,
         });
     }
