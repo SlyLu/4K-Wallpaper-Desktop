@@ -756,24 +756,23 @@ async fn sync_online_metadata(
         );
     }
     let synced_at = current_sync_stamp()?;
+    let provider_keys = aggregated
+        .wallpapers
+        .iter()
+        .map(|wallpaper| (wallpaper.provider.clone(), wallpaper.remote_id.clone()))
+        .collect::<Vec<_>>();
     let records: Vec<_> = aggregated
         .wallpapers
         .into_iter()
-        .map(|wallpaper| {
-            let mut record = remote_to_new(wallpaper, &requested_category, &synced_at, None);
-            if let Some(keyword) = requested_keyword.as_ref()
-                && !record
-                    .tags
-                    .iter()
-                    .any(|tag| tag.eq_ignore_ascii_case(keyword))
-            {
-                // Wallhaven search listings omit full tags; retain the proven query association.
-                record.tags.push(keyword.clone());
-            }
-            record
-        })
+        .map(|wallpaper| remote_to_new(wallpaper, &requested_category, &synced_at, None))
         .collect();
     let imported = state.database.upsert_wallpapers(&records)?;
+    if let Some(keyword) = requested_keyword.as_deref() {
+        // Search provenance stays separate from semantic provider tags and can be replaced safely.
+        state
+            .database
+            .replace_search_results(keyword, &provider_keys)?;
+    }
     state.database.set_setting(
         "resource_sync_last_success",
         &serde_json::Value::from(current_unix_seconds()?),
@@ -1052,6 +1051,13 @@ pub fn update_settings(
             "custom theme colors must use #RRGGBB format",
         ));
     }
+    // Provider credentials remain optional and whitespace-free in the local config file.
+    settings.thegamesdb_api_key = settings
+        .thegamesdb_api_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned);
     let autostart = app.autolaunch();
     if settings.auto_start {
         autostart.enable().map_err(|error| {
@@ -1064,6 +1070,9 @@ pub fn update_settings(
         }
     }
     settings.save(&state.paths.config_file)?;
+    state
+        .providers
+        .configure_thegamesdb_api_key(settings.thegamesdb_api_key.as_deref())?;
     let mut active = state
         .settings
         .lock()
@@ -1126,10 +1135,12 @@ fn remote_to_new(
     let category = match requested_category {
         WallpaperCategory::Nature => "nature".to_owned(),
         WallpaperCategory::Anime => "anime".to_owned(),
+        WallpaperCategory::Games => "games".to_owned(),
         WallpaperCategory::People => "people".to_owned(),
         WallpaperCategory::Local => "local".to_owned(),
         WallpaperCategory::All => match wallpaper.category.to_ascii_lowercase().as_str() {
             "anime" => "anime".to_owned(),
+            "games" => "games".to_owned(),
             "people" => "people".to_owned(),
             _ => "nature".to_owned(),
         },

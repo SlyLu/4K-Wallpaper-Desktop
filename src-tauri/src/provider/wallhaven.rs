@@ -11,7 +11,10 @@ use crate::{
     image_processing::inspect_image,
 };
 
-use super::{RemoteWallpaper, WallpaperCategory, WallpaperProvider, WallpaperQuery, WallpaperSort};
+use super::{
+    RemoteWallpaper, WallpaperCategory, WallpaperProvider, WallpaperQuery, WallpaperSort,
+    provider_keywords,
+};
 
 const API_ROOT: &str = "https://wallhaven.cc/api/v1";
 
@@ -48,6 +51,7 @@ impl WallhavenProvider {
             WallpaperCategory::All => ("111", None),
             WallpaperCategory::Nature => ("100", Some("nature")),
             WallpaperCategory::Anime => ("010", None),
+            WallpaperCategory::Games => ("111", Some("video game")),
             WallpaperCategory::People => ("001", None),
             WallpaperCategory::Local => {
                 return Err(AppError::Provider(
@@ -75,7 +79,9 @@ impl WallhavenProvider {
             ("page", query.page.max(1).to_string()),
         ];
         if let Some(keyword) = query.keyword.filter(|value| !value.trim().is_empty()) {
-            parameters.push(("q", keyword));
+            // English aliases improve common Chinese title searches on Wallhaven's tag index.
+            let expanded = provider_keywords(&keyword);
+            parameters.push(("q", expanded.last().cloned().unwrap_or(keyword)));
         }
         if let Some(ratio) = query.aspect_ratio.filter(|value| !value.trim().is_empty()) {
             parameters.push(("ratios", ratio.replace(':', "x")));

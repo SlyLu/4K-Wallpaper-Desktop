@@ -55,6 +55,14 @@ const MIGRATIONS: &[(i64, &str)] = &[
         10,
         include_str!("../../../migrations/0010_persisted_rotation_selection.sql"),
     ),
+    (
+        11,
+        include_str!("../../../migrations/0011_provider_search_results.sql"),
+    ),
+    (
+        12,
+        include_str!("../../../migrations/0012_thegamesdb_provider.sql"),
+    ),
 ];
 
 /// Owns the single local SQLite connection behind a mutex for Tauri command access.
@@ -544,6 +552,42 @@ impl Database {
         Ok(upserted)
     }
 
+    /// Replaces one query's transient provider matches without pretending the query is a tag.
+    pub fn replace_search_results(
+        &self,
+        query: &str,
+        provider_keys: &[(String, String)],
+    ) -> AppResult<usize> {
+        let query = query.trim();
+        if query.is_empty() {
+            return Ok(0);
+        }
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction()?;
+        transaction.execute(
+            "DELETE FROM wallpaper_search_result WHERE query = ?1 COLLATE NOCASE",
+            [query],
+        )?;
+        let mut inserted = 0_usize;
+        for (provider, remote_id) in provider_keys {
+            inserted += transaction.execute(
+                "INSERT OR IGNORE INTO wallpaper_search_result(query, wallpaper_id, matched_at)
+                 SELECT ?1, source.wallpaper_id, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                 FROM wallpaper_provider_source AS source
+                 WHERE source.provider = ?2 AND source.remote_id = ?3",
+                params![query, provider, remote_id],
+            )?;
+        }
+        // Search-session associations are regenerable metadata and must not grow without bound.
+        transaction.execute(
+            "DELETE FROM wallpaper_search_result
+             WHERE datetime(matched_at) < datetime('now', '-30 days')",
+            [],
+        )?;
+        transaction.commit()?;
+        Ok(inserted)
+    }
+
     /// Returns one bounded page and a total count for stable UI pagination.
     pub fn list_wallpapers(
         &self,
@@ -615,7 +659,7 @@ impl Database {
         {
             let slot = values.len() + 1;
             predicates.push(format!(
-                "(wallpaper.name LIKE ?{slot} COLLATE NOCASE OR wallpaper.provider LIKE ?{slot} COLLATE NOCASE OR wallpaper.category LIKE ?{slot} COLLATE NOCASE OR EXISTS (SELECT 1 FROM wallpaper_tag wt JOIN tag t ON t.id = wt.tag_id WHERE wt.wallpaper_id = wallpaper.id AND t.name LIKE ?{slot} COLLATE NOCASE))"
+                "(wallpaper.name LIKE ?{slot} COLLATE NOCASE OR wallpaper.provider LIKE ?{slot} COLLATE NOCASE OR wallpaper.category LIKE ?{slot} COLLATE NOCASE OR EXISTS (SELECT 1 FROM wallpaper_tag wt JOIN tag t ON t.id = wt.tag_id WHERE wt.wallpaper_id = wallpaper.id AND t.name LIKE ?{slot} COLLATE NOCASE) OR EXISTS (SELECT 1 FROM wallpaper_search_result AS result WHERE result.wallpaper_id = wallpaper.id AND result.query LIKE ?{slot} COLLATE NOCASE))"
             ));
             values.push(Value::Text(format!("%{keyword}%")));
         }
@@ -644,7 +688,9 @@ impl Database {
             .filter(|value| !value.eq_ignore_ascii_case("all"))
         {
             let slot = values.len() + 1;
-            predicates.push(format!("wallpaper.provider = ?{slot} COLLATE NOCASE"));
+            predicates.push(format!(
+                "(wallpaper.provider = ?{slot} COLLATE NOCASE OR EXISTS (SELECT 1 FROM wallpaper_provider_source AS source_filter WHERE source_filter.wallpaper_id = wallpaper.id AND source_filter.provider = ?{slot} COLLATE NOCASE))"
+            ));
             values.push(Value::Text(provider.to_owned()));
         }
         if query.locally_available {
@@ -2577,10 +2623,10 @@ mod tests {
         let directory = tempfile::tempdir()?;
         let path = directory.path().join("test.db");
         let first = Database::open(&path)?;
-        assert_eq!(first.schema_version()?, 10);
+        assert_eq!(first.schema_version()?, 12);
         drop(first);
         let second = Database::open(&path)?;
-        assert_eq!(second.schema_version()?, 10);
+        assert_eq!(second.schema_version()?, 12);
         Ok(())
     }
 
@@ -2633,17 +2679,69 @@ mod tests {
         drop(connection);
 
         let database = Database::open(&path)?;
-        assert_eq!(database.schema_version()?, 10);
+        assert_eq!(database.schema_version()?, 12);
         let upgraded = database.list_wallpapers(1, 10, false)?;
         assert_eq!(upgraded.total, 1);
         assert!(upgraded.items[0].favorite);
         assert_eq!(database.list_schedules()?[0].selection_mode, "random");
-        assert_eq!(database.list_provider_status()?.len(), 3);
+        assert_eq!(database.list_provider_status()?.len(), 6);
         let connection = database.lock()?;
         assert_eq!(
             connection.query_row("SELECT COUNT(*) FROM wallpaper_history", [], |row| row
                 .get::<_, i64>(0))?,
             1
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn search_result_upgrade_clears_only_unprotected_legacy_query_tags()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("legacy-search.db");
+        let mut connection = Connection::open(&path)?;
+        connection.execute_batch(
+            "PRAGMA foreign_keys = ON;
+             CREATE TABLE schema_migration(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);",
+        )?;
+        for (version, sql) in MIGRATIONS.iter().take(10) {
+            let transaction = connection.transaction()?;
+            transaction.execute_batch(sql)?;
+            transaction.execute(
+                "INSERT INTO schema_migration(version, applied_at) VALUES (?1, '2026-08-28T00:00:00Z')",
+                [version],
+            )?;
+            transaction.commit()?;
+        }
+        connection.execute("INSERT INTO tag(name) VALUES ('七龙珠')", [])?;
+        for (remote_id, favorite) in [("unprotected", 0), ("favorite", 1)] {
+            connection.execute(
+                "INSERT INTO wallpaper(provider, remote_id, name, width, height, category, purity,
+                    download_status, favorite, blacklisted, preset, synced_at)
+                 VALUES ('wikimedia_commons', ?1, 'Unrelated railway', 5000, 3000, 'all',
+                    'sfw', 'remote', ?2, 0, 0, '2026-08-28T00:00:00Z')",
+                params![remote_id, favorite],
+            )?;
+            let wallpaper_id = connection.last_insert_rowid();
+            connection.execute(
+                "INSERT INTO wallpaper_tag(wallpaper_id, tag_id)
+                 SELECT ?1, id FROM tag WHERE name = '七龙珠'",
+                [wallpaper_id],
+            )?;
+        }
+        drop(connection);
+
+        let database = Database::open(&path)?;
+        let connection = database.lock()?;
+        let remaining: i64 = connection.query_row(
+            "SELECT COUNT(*) FROM wallpaper_tag
+             JOIN wallpaper ON wallpaper.id = wallpaper_tag.wallpaper_id",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(
+            remaining, 1,
+            "favorite metadata must retain its existing tags"
         );
         Ok(())
     }
@@ -2692,6 +2790,32 @@ mod tests {
         assert_eq!(page.total, 1);
         assert_eq!(page.items[0].remote_id, "abc123");
         assert_eq!(page.items[0].tags, vec!["lake", "mountain"]);
+        Ok(())
+    }
+
+    #[test]
+    fn provider_search_results_do_not_pollute_semantic_tags()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let database = Database::open(&directory.path().join("search-result.db"))?;
+        let mut wallpaper = sample_wallpaper();
+        wallpaper.preset = false;
+        wallpaper.name = "Provider listing without translated title".into();
+        database.upsert_wallpapers(std::slice::from_ref(&wallpaper))?;
+        database.replace_search_results(
+            "七龙珠",
+            &[(wallpaper.provider.clone(), wallpaper.remote_id.clone())],
+        )?;
+
+        let page = database.search_wallpapers(&CatalogQuery {
+            keyword: Some("七龙珠".into()),
+            page: 1,
+            page_size: 20,
+            ..CatalogQuery::default()
+        })?;
+
+        assert_eq!(page.total, 1);
+        assert!(!page.items[0].tags.iter().any(|tag| tag == "七龙珠"));
         Ok(())
     }
 

@@ -14,7 +14,7 @@
 - 5 GB 默认缓存上限、LRU 自动清理、手动清理和收藏保护
 - 系统托盘、关闭到托盘，以及登录后仅驻留托盘的开机启动设置
 - 深色、浅色、跟随系统、自定义配色、渐变和彩虹应用主题
-- Wallhaven 与 Wikimedia Commons 多图源聚合、独立健康状态和公平合并
+- Wallhaven、Wikimedia Commons、Openverse、Art Institute of Chicago 与 TheGamesDB 多图源聚合、独立健康状态和公平合并
 - 规范 URL、缩略图感知指纹与下载后 SHA-256 多层跨源去重，并保留来源、作者与许可证
 - 手动/智能集合、按显示器集合来源和可解释的四种轮换策略
 - 工作日/周末、时间段、电池与全屏暂停规则，以及最多 3 次候选重试
@@ -95,6 +95,8 @@ Windows 构建产物位于 `src-tauri/target/release/bundle/`。macOS 构建需�
 - 日志：数据目录下的 `logs/wallpaper-desktop.log`
 
 LocalProvider 只索引用户明确选择的目录，原始图片保持原位且不会被缓存清理删除。
+
+TheGamesDB 专门补充高分辨率游戏 Fanart 和截图。该 Provider 默认关闭；使用前请在 TheGamesDB 登录获取个人 API Key，在应用“设置 → 在线图源”中填写、保存并启用。密钥只保存在本机配置文件，不会写入仓库或日志。
 
 ## 架构边界
 

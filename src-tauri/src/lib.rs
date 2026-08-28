@@ -155,6 +155,7 @@ pub fn run() -> AppResult<()> {
             tracing::info!(count = imported, "bundled preset catalog imported");
             let platform = platform::create_platform_services()?;
             let providers = ProviderServices::new(&paths)?;
+            providers.configure_thegamesdb_api_key(config.thegamesdb_api_key.as_deref())?;
             let aggregated_providers =
                 AggregatedProviderService::new(database.clone(), providers.clone());
             let images =

@@ -42,11 +42,22 @@ impl AggregatedProviderService {
             .enabled_online_providers()?
             .into_iter()
             .collect();
+        let requested = query.providers.as_ref().map(|providers| {
+            providers
+                .iter()
+                .map(|provider| provider.to_ascii_lowercase())
+                .collect::<HashSet<_>>()
+        });
         let providers: Vec<Arc<dyn WallpaperProvider>> = self
             .providers
             .online()
             .into_iter()
             .filter(|provider| enabled.contains(provider.provider_name()))
+            .filter(|provider| {
+                requested
+                    .as_ref()
+                    .is_none_or(|scope| scope.contains(provider.provider_name()))
+            })
             .collect();
         if providers.is_empty() {
             return Ok(AggregatedProviderResult {

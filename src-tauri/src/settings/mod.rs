@@ -30,6 +30,7 @@ pub struct AppConfig {
     pub theme_background_image: Option<String>,
     pub theme_background_fit: String,
     pub theme_background_overlay: f32,
+    pub thegamesdb_api_key: Option<String>,
 }
 
 impl Default for AppConfig {
@@ -58,6 +59,7 @@ impl Default for AppConfig {
             theme_background_image: None,
             theme_background_fit: "fill".into(),
             theme_background_overlay: 0.35,
+            thegamesdb_api_key: None,
         }
     }
 }

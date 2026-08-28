@@ -16,6 +16,7 @@ const wallpaperStore = useWallpaperStore();
 const monitorStore = useMonitorStore();
 const actionMessage = ref("");
 const jumpPage = ref(1);
+const bulkActive = ref(false);
 const currentPageBulkSelected = computed(() =>
   wallpaperStore.wallpapers.length > 0
   && wallpaperStore.wallpapers.every((wallpaper) => Boolean(wallpaperStore.bulkSelections[wallpaper.id])),
@@ -26,6 +27,13 @@ const bulkActionLabel = computed(() => ({
   index: "移除索引",
   "collection-add": "加入集合",
   "collection-remove": "移出集合",
+}[props.bulkMode ?? "index"]));
+const bulkEntryLabel = computed(() => ({
+  gallery: "批量管理图库",
+  dislike: "批量标记不喜欢",
+  index: "批量管理索引",
+  "collection-add": "批量加入集合",
+  "collection-remove": "批量移出集合",
 }[props.bulkMode ?? "index"]));
 
 /** Translates persisted lifecycle state into a concise card label. */
@@ -108,6 +116,7 @@ async function executeBulk(): Promise<void> {
     wallpaperStore.clearBulkSelected();
     if (props.bulkMode === "collection-remove") await wallpaperStore.queryCollection(props.collectionId);
     actionMessage.value = `已${props.bulkMode === "collection-add" ? "加入" : "移出"} ${changed} 张壁纸`;
+    bulkActive.value = false;
     return;
   }
   const explanation = props.bulkMode === "gallery"
@@ -116,6 +125,19 @@ async function executeBulk(): Promise<void> {
   if (!window.confirm(`确定${bulkActionLabel.value}所选 ${wallpaperStore.bulkSelectedCount} 张壁纸吗？${explanation}`)) return;
   const result = await wallpaperStore.removeBulkSelected(props.bulkMode);
   actionMessage.value = `已处理 ${result.removed} 张${result.failed ? `，${result.failed} 张处理失败` : ""}`;
+  bulkActive.value = false;
+}
+
+/** Makes batch selection an explicit mode so it cannot be confused with rotation selection. */
+function setBulkActive(active: boolean): void {
+  bulkActive.value = active;
+  if (!active) wallpaperStore.clearBulkSelected();
+}
+
+/** Card clicks select in batch mode and open details during ordinary browsing. */
+function handleCardClick(wallpaper: WallpaperRecord): void {
+  if (bulkActive.value) wallpaperStore.toggleBulkSelected(wallpaper);
+  else wallpaperStore.activeWallpaper = wallpaper;
 }
 
 onBeforeUnmount(() => wallpaperStore.clearBulkSelected());
@@ -124,9 +146,13 @@ onBeforeUnmount(() => wallpaperStore.clearBulkSelected());
 <template>
   <p v-if="actionMessage" class="inline-status">{{ actionMessage }}</p>
   <p v-if="wallpaperStore.error" class="message error">{{ wallpaperStore.error }}</p>
-  <section v-if="props.bulkMode" class="bulk-toolbar">
+  <section v-if="props.bulkMode && !bulkActive" class="bulk-entry">
+    <div><strong>{{ bulkEntryLabel }}</strong><span>进入后可跨页选择，轮换勾选不会受到影响。</span></div>
+    <button class="secondary" @click="setBulkActive(true)">进入批量管理</button>
+  </section>
+  <section v-if="props.bulkMode && bulkActive" class="bulk-toolbar">
     <div><strong>批量管理</strong><span>已跨页选择 {{ wallpaperStore.bulkSelectedCount }} 张</span></div>
-    <div class="actions"><button class="secondary" @click="wallpaperStore.setCurrentPageBulkSelected(!currentPageBulkSelected)">{{ currentPageBulkSelected ? "取消本页" : "选择本页" }}</button><button v-if="wallpaperStore.bulkSelectedCount" class="secondary" @click="wallpaperStore.clearBulkSelected">清空选择</button><button class="danger" :disabled="!wallpaperStore.bulkSelectedCount" @click="executeBulk">{{ bulkActionLabel }}</button></div>
+    <div class="actions"><button class="secondary" @click="wallpaperStore.setCurrentPageBulkSelected(!currentPageBulkSelected)">{{ currentPageBulkSelected ? "取消本页" : "选择本页" }}</button><button v-if="wallpaperStore.bulkSelectedCount" class="secondary" @click="wallpaperStore.clearBulkSelected">清空选择</button><button class="danger" :disabled="!wallpaperStore.bulkSelectedCount" @click="executeBulk">{{ bulkActionLabel }}</button><button class="secondary" @click="setBulkActive(false)">退出批量管理</button></div>
   </section>
   <div v-if="wallpaperStore.loading" class="loading-grid">
     <span v-for="index in 8" :key="index"></span>
@@ -136,33 +162,35 @@ onBeforeUnmount(() => wallpaperStore.clearBulkSelected());
       v-for="wallpaper in wallpaperStore.wallpapers"
       :key="wallpaper.id"
       class="wallpaper-card"
-      :class="{ selected: wallpaperStore.selectedIds.includes(wallpaper.id) }"
+      :class="{ selected: !bulkActive && wallpaperStore.selectedIds.includes(wallpaper.id), 'batch-mode': bulkActive, 'batch-selected': bulkActive && wallpaperStore.bulkSelections[wallpaper.id] }"
       tabindex="0"
-      @click="wallpaperStore.activeWallpaper = wallpaper"
-      @keydown.enter="wallpaperStore.activeWallpaper = wallpaper"
+      @click="handleCardClick(wallpaper)"
+      @keydown.enter="handleCardClick(wallpaper)"
     >
       <img :src="wallpaperStore.thumbnailFor(wallpaper)" :alt="wallpaper.name" loading="lazy" />
       <div class="card-shade"></div>
       <button
+        v-if="!bulkActive"
         class="select-button"
         :aria-label="wallpaperStore.selectedIds.includes(wallpaper.id) ? '从轮换池取消' : '加入轮换池'"
         :title="wallpaperStore.selectedIds.includes(wallpaper.id) ? '取消自动切换选择' : '加入自动切换选择池'"
         @click.stop="wallpaperStore.toggleSelected(wallpaper.id)"
       >{{ wallpaperStore.selectedIds.includes(wallpaper.id) ? "✓ 已加入轮换" : "+ 加入轮换" }}</button>
       <button
-        v-if="props.bulkMode"
+        v-if="props.bulkMode && bulkActive"
         class="bulk-select-button"
         :class="{ active: wallpaperStore.bulkSelections[wallpaper.id] }"
         :aria-label="wallpaperStore.bulkSelections[wallpaper.id] ? '取消批量选择' : '加入批量选择'"
         @click.stop="wallpaperStore.toggleBulkSelected(wallpaper)"
       >{{ wallpaperStore.bulkSelections[wallpaper.id] ? "✓ 已选择" : "批量选择" }}</button>
       <button
+        v-if="!bulkActive"
         class="heart-button"
         :class="{ active: wallpaper.favorite }"
         :aria-label="wallpaper.favorite ? '取消收藏' : '收藏'"
         @click.stop="wallpaperStore.toggleFavorite(wallpaper)"
       >♥</button>
-      <div class="card-actions">
+      <div v-if="!bulkActive" class="card-actions">
         <button @click.stop="quickApply(wallpaper.id)">设为壁纸</button>
         <button v-if="!props.management" class="glass" @click.stop="wallpaperStore.activeWallpaper = wallpaper">查看原图</button>
         <button v-if="props.bulkMode === 'dislike'" class="danger" @click.stop="dislikeOne(wallpaper)">不喜欢</button>

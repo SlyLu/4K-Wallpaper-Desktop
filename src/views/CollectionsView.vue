@@ -15,6 +15,7 @@ const wallpaperStore = useWallpaperStore();
 const collections = ref<CollectionRecord[]>([]);
 const active = ref<CollectionRecord>();
 const browseAll = ref(false);
+const showCreate = ref(false);
 const creating = ref(false);
 const message = ref("");
 const form = reactive({ name: "", description: "", smart: false, category: "all", provider: "all", favorite: false, tags: "" });
@@ -55,6 +56,7 @@ async function submitCollection(): Promise<void> {
     await refreshCollections();
     const created = collections.value.find((item) => item.id === collection.id);
     if (created) await selectCollection(created);
+    showCreate.value = false;
     message.value = "集合已创建";
   } catch (cause) {
     message.value = String(cause);
@@ -86,19 +88,18 @@ onMounted(async () => {
 </script>
 
 <template>
-  <header class="page-header"><div><p class="eyebrow">COLLECTIONS</p><h1>壁纸集合</h1><p>用手动集合或安全的智能规则组织每块屏幕的轮换来源。</p></div></header>
-  <section class="collection-create">
-    <input v-model="form.name" maxlength="80" placeholder="集合名称" />
-    <input v-model="form.description" placeholder="说明（可选）" />
-    <label><input v-model="form.smart" type="checkbox" /> 智能集合</label>
-    <template v-if="form.smart"><select v-model="form.category"><option value="all">全部分类</option><option value="nature">自然</option><option value="anime">动漫</option><option value="people">人物</option><option value="local">本地</option></select><select v-model="form.provider"><option value="all">全部来源</option><option value="wallhaven">Wallhaven</option><option value="wikimedia_commons">Wikimedia Commons</option><option value="local">Local</option></select><input v-model="form.tags" placeholder="标签，逗号分隔" /><label><input v-model="form.favorite" type="checkbox" /> 仅收藏</label></template>
-    <button :disabled="creating || !form.name.trim()" @click="submitCollection">{{ creating ? "创建中…" : "创建集合" }}</button>
+  <header class="page-header"><div><p class="eyebrow">COLLECTIONS</p><h1>壁纸集合</h1><p>用手动集合或安全的智能规则组织每块屏幕的轮换来源。</p></div><button @click="showCreate = !showCreate">{{ showCreate ? "收起新建面板" : "+ 新建集合" }}</button></header>
+  <section v-if="showCreate" class="collection-create">
+    <div class="collection-create-heading"><div><strong>创建集合</strong><span>手动集合保存选择关系，智能集合按规则实时更新。</span></div><button class="secondary compact" @click="showCreate = false">关闭</button></div>
+    <div class="collection-create-fields"><label>集合名称<input v-model="form.name" maxlength="80" placeholder="例如：客厅屏幕" /></label><label>说明<input v-model="form.description" placeholder="可选" /></label><label class="switch-field"><input v-model="form.smart" type="checkbox" /><span>智能集合</span></label></div>
+    <div v-if="form.smart" class="collection-rule-grid"><label>分类<select v-model="form.category"><option value="all">全部分类</option><option value="nature">自然</option><option value="anime">动漫</option><option value="games">游戏</option><option value="people">人物</option><option value="local">本地</option></select></label><label>来源<select v-model="form.provider"><option value="all">全部来源</option><option value="wallhaven">Wallhaven</option><option value="wikimedia_commons">Wikimedia Commons</option><option value="openverse">Openverse</option><option value="art_institute_chicago">Art Institute of Chicago</option><option value="thegamesdb">TheGamesDB</option><option value="local">本地图库</option></select></label><label>标签<input v-model="form.tags" placeholder="多个标签用逗号分隔" /></label><label class="switch-field"><input v-model="form.favorite" type="checkbox" /><span>仅包含收藏</span></label></div>
+    <div class="collection-create-actions"><button :disabled="creating || !form.name.trim()" @click="submitCollection">{{ creating ? "创建中…" : "创建并打开" }}</button></div>
   </section>
   <p v-if="message" class="inline-status">{{ message }}</p>
   <section class="collection-layout">
-    <aside class="collection-list"><button v-for="collection in collections" :key="collection.id" :class="{ active: active?.id === collection.id }" @click="selectCollection(collection)"><strong>{{ collection.name }}</strong><span>{{ collection.smart ? "智能" : "手动" }} · {{ collection.wallpaperCount }} 张</span></button><p v-if="!collections.length">还没有集合</p></aside>
+    <aside class="collection-list"><div class="collection-list-heading"><strong>我的集合</strong><span>{{ collections.length }} 个</span></div><button v-for="collection in collections" :key="collection.id" :class="{ active: active?.id === collection.id }" @click="selectCollection(collection)"><span class="collection-type">{{ collection.smart ? "智能" : "手动" }}</span><strong>{{ collection.name }}</strong><small>{{ collection.description || "暂无说明" }}</small><em>{{ collection.wallpaperCount }} 张</em></button><p v-if="!collections.length">还没有集合，点击右上角创建。</p></aside>
     <div class="collection-content">
-      <div v-if="active" class="section-title"><div><h2>{{ active.name }}</h2><p>{{ active.description || (active.smart ? "按规则实时生成" : "手动管理") }}</p></div><div class="actions"><button v-if="!active.smart" class="secondary" @click="browseCatalog">从图库添加</button><button v-if="browseAll" class="secondary" @click="selectCollection(active)">返回集合</button><button class="danger" @click="removeActive">删除集合</button></div></div>
+      <div v-if="active" class="collection-detail-header"><div><p class="eyebrow">{{ browseAll ? 'SELECT FROM LIBRARY' : active.smart ? 'SMART COLLECTION' : 'MANUAL COLLECTION' }}</p><h2>{{ browseAll ? `向“${active.name}”添加壁纸` : active.name }}</h2><p>{{ browseAll ? '可跨页选择资源，确认后统一加入集合。' : active.description || (active.smart ? '按规则实时生成' : '手动管理') }}</p></div><div class="actions"><button v-if="!active.smart && !browseAll" class="secondary" @click="browseCatalog">从图库添加</button><button v-if="browseAll" class="secondary" @click="selectCollection(active)">返回集合</button><button v-if="!browseAll" class="danger" @click="removeActive">删除集合</button></div></div>
       <WallpaperGrid v-if="active" :bulk-mode="active.smart ? undefined : bulkMode" :collection-id="active.id" :empty-text="browseAll ? '图库中没有可添加的壁纸。' : '这个集合还是空的。'" />
       <div v-else class="empty-state"><strong>创建第一个集合</strong><p>集合只保存组织关系，不复制或删除原图。</p></div>
     </div>

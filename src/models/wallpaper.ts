@@ -56,8 +56,8 @@ export type CatalogSort = "latest" | "random" | "name";
 export interface CatalogQuery {
   keyword?: string;
   name?: string;
-  category?: "all" | "nature" | "anime" | "people" | "local";
-  provider?: "all" | "wallhaven" | "wikimedia_commons" | "local";
+  category?: "all" | "nature" | "anime" | "games" | "people" | "local";
+  provider?: "all" | "wallhaven" | "wikimedia_commons" | "openverse" | "art_institute_chicago" | "thegamesdb" | "local";
   /** Includes every original stored on this device without changing its provider identity. */
   locallyAvailable?: boolean;
   fileBacked?: boolean;
@@ -83,7 +83,7 @@ export type ProviderSort = "latest" | "popular" | "random";
 
 export interface ProviderQuery {
   keyword?: string;
-  category: "all" | "nature" | "anime" | "people" | "local";
+  category: "all" | "nature" | "anime" | "games" | "people" | "local";
   minWidth: number;
   minHeight: number;
   aspectRatio?: string;
@@ -91,4 +91,6 @@ export interface ProviderQuery {
   pageSize: number;
   sort: ProviderSort;
   safety: string;
+  /** Restricts online aggregation to the explicit source filter selected by the user. */
+  providers?: string[];
 }

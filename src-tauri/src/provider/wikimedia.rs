@@ -11,7 +11,10 @@ use crate::{
     image_processing::inspect_image,
 };
 
-use super::{RemoteWallpaper, WallpaperProvider, WallpaperQuery, WallpaperSort};
+use super::{
+    RemoteWallpaper, WallpaperProvider, WallpaperQuery, WallpaperSort, metadata_matches_keyword,
+    provider_keywords,
+};
 
 const API_URL: &str = "https://commons.wikimedia.org/w/api.php";
 const MAX_DOWNLOAD_BYTES: u64 = 100 * 1024 * 1024;
@@ -39,11 +42,15 @@ impl WikimediaCommonsProvider {
     async fn query(&self, query: WallpaperQuery) -> AppResult<Vec<RemoteWallpaper>> {
         let page_size = query.page_size.clamp(1, 50);
         let offset = query.page.max(1).saturating_sub(1) * page_size;
-        let keyword = query.keyword.as_deref().map(str::trim).unwrap_or_default();
-        let search = if keyword.is_empty() {
+        let keywords = query
+            .keyword
+            .as_deref()
+            .map(provider_keywords)
+            .unwrap_or_default();
+        let search = if keywords.is_empty() {
             "filetype:bitmap".to_owned()
         } else {
-            format!("{keyword} filetype:bitmap")
+            format!("({}) filetype:bitmap", keywords.join(" OR "))
         };
         let sort = match query.sort {
             WallpaperSort::Latest => "create_timestamp_desc",
@@ -76,13 +83,15 @@ impl WikimediaCommonsProvider {
             .await?
             .error_for_status()?;
         let payload: ApiResponse = response.json().await?;
-        Ok(payload
+        let results = payload
             .query
             .map(|query_result| query_result.pages)
             .unwrap_or_default()
             .into_iter()
             .filter_map(|page| map_page(page, query.min_width, query.min_height))
-            .collect())
+            .filter(|wallpaper| metadata_matches_keyword(wallpaper, &keywords))
+            .collect();
+        Ok(results)
     }
 }
 
@@ -362,6 +371,7 @@ mod tests {
                 page_size: 20,
                 sort: WallpaperSort::Popular,
                 safety: "sfw".into(),
+                providers: None,
             })
             .await?;
         assert!(!results.is_empty());

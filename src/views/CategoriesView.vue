@@ -5,8 +5,8 @@ import WallpaperGrid from "../components/WallpaperGrid.vue";
 import { useWallpaperStore } from "../stores/wallpaper";
 
 const wallpaperStore = useWallpaperStore();
-const category = ref<"all" | "nature" | "anime" | "people" | "local">("all");
-const categories = [["all", "全部", "所有来源"], ["nature", "自然", "山川与城市"], ["anime", "动漫", "插画与动画"], ["people", "人物", "人物摄影"], ["local", "本地", "你的图库"]] as const;
+const category = ref<"all" | "nature" | "anime" | "games" | "people" | "local">("all");
+const categories = [["all", "全部", "所有来源"], ["nature", "自然", "山川与城市"], ["anime", "动漫", "插画与动画"], ["games", "游戏", "Fanart 与截图"], ["people", "人物", "人物摄影"], ["local", "本地", "你的图库"]] as const;
 
 /** Treats Local as device availability while keeping downloaded items' original categories. */
 function loadCategory(): Promise<void> {

@@ -21,4 +21,5 @@ export interface AppConfig {
   themeBackgroundImage?: string;
   themeBackgroundFit: "fill" | "fit" | "center" | "stretch";
   themeBackgroundOverlay: number;
+  thegamesdbApiKey?: string;
 }

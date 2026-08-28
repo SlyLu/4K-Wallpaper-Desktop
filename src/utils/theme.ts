@@ -26,7 +26,14 @@ export function applyTheme(settings: AppConfig, backgroundUrl?: string, luminanc
   root.dataset.shadow = manifest.shadow;
   root.dataset.motion = manifest.motion;
   root.dataset.glass = String(manifest.glass);
-  root.dataset.backgroundTone = luminance !== undefined && luminance > 0.58 ? "light" : "dark";
+  const overlayBackground = resolvedMode === "custom"
+    ? settings.themeBackground
+    : resolvedMode === "light" ? "#eef6fb" : "#07111d";
+  const effectiveLuminance = luminance === undefined
+    ? colorLuminance(overlayBackground)
+    : luminance * (1 - settings.themeBackgroundOverlay)
+      + colorLuminance(overlayBackground) * settings.themeBackgroundOverlay;
+  root.dataset.backgroundTone = effectiveLuminance > 0.58 ? "light" : "dark";
   root.style.setProperty("--theme-radius", `${manifest.radius}px`);
   root.style.setProperty("--theme-background-overlay", String(settings.themeBackgroundOverlay));
   applyBackground(root, settings, backgroundUrl);
@@ -42,7 +49,7 @@ export function applyTheme(settings: AppConfig, backgroundUrl?: string, luminanc
   root.style.setProperty("--color-text", readableText(settings.themeBackground));
   root.style.setProperty("--color-on-accent", readableText(settings.themeAccent));
   if (backgroundUrl && luminance !== undefined) {
-    root.style.setProperty("--color-text", luminance > 0.58 ? "#102231" : "#f4f9fd");
+    root.style.setProperty("--color-text", effectiveLuminance > 0.58 ? "#102231" : "#f4f9fd");
   }
 }
 
@@ -66,9 +73,13 @@ function applyBackground(root: HTMLElement, settings: AppConfig, backgroundUrl?:
 
 /** Chooses black or white foreground from relative luminance for custom color readability. */
 export function readableText(hex: string): string {
+  return colorLuminance(hex) > 0.58 ? "#07111d" : "#f7fbff";
+}
+
+/** Returns a bounded luminance estimate shared by live and preview contrast decisions. */
+export function colorLuminance(hex: string): number {
   const normalized = hex.replace("#", "");
-  if (!/^[0-9a-f]{6}$/i.test(normalized)) return "#edf6ff";
+  if (!/^[0-9a-f]{6}$/i.test(normalized)) return 0;
   const [red, green, blue] = [0, 2, 4].map((offset) => Number.parseInt(normalized.slice(offset, offset + 2), 16));
-  const luminance = (red * 299 + green * 587 + blue * 114) / 255000;
-  return luminance > 0.58 ? "#07111d" : "#f7fbff";
+  return (red * 299 + green * 587 + blue * 114) / 255000;
 }
