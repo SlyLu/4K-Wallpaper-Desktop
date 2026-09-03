@@ -4,6 +4,7 @@ import { onMounted, ref } from "vue";
 import WallpaperGrid from "../components/WallpaperGrid.vue";
 import type { ProviderSort } from "../models/wallpaper";
 import { useWallpaperStore } from "../stores/wallpaper";
+import { errorMessage } from "../utils/error";
 
 const wallpaperStore = useWallpaperStore();
 const feed = ref<ProviderSort>("popular");
@@ -29,8 +30,8 @@ async function refreshOnline(): Promise<void> {
       safety: "sfw",
     });
     refreshMessage.value = `已同步 ${count} 条在线元数据，原图仍按需下载`;
-  } catch {
-    refreshMessage.value = "在线资源暂不可用，本地资源仍可正常使用";
+  } catch (cause) {
+    refreshMessage.value = `在线资源暂不可用：${errorMessage(cause)}；本地资源仍可正常使用`;
   }
 }
 

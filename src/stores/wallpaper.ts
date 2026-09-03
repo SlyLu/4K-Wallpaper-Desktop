@@ -16,6 +16,7 @@ import type { FitMode } from "../models/image";
 import type { CatalogQuery, ProviderQuery, WallpaperRecord } from "../models/wallpaper";
 import { queryCollectionWallpapers } from "../api/collections";
 import { getRotationSelection, setRotationSelection } from "../api/scheduler";
+import { errorMessage } from "../utils/error";
 
 export const useWallpaperStore = defineStore("wallpaper", () => {
   const wallpapers = ref<WallpaperRecord[]>([]);
@@ -50,7 +51,7 @@ export const useWallpaperStore = defineStore("wallpaper", () => {
       pageSize.value = result.pageSize;
       await Promise.all(result.items.map(loadCachedThumbnail));
     } catch (cause) {
-      error.value = String(cause);
+      error.value = errorMessage(cause);
     } finally {
       loading.value = false;
     }
@@ -70,7 +71,7 @@ export const useWallpaperStore = defineStore("wallpaper", () => {
       pageSize.value = result.pageSize;
       await Promise.all(result.items.map(loadCachedThumbnail));
     } catch (cause) {
-      error.value = String(cause);
+      error.value = errorMessage(cause);
     } finally {
       loading.value = false;
     }
@@ -100,7 +101,7 @@ export const useWallpaperStore = defineStore("wallpaper", () => {
       await query(lastQuery.value);
       return imported;
     } catch (cause) {
-      error.value = String(cause);
+      error.value = errorMessage(cause);
       throw cause;
     } finally {
       syncing.value = false;
@@ -128,7 +129,7 @@ export const useWallpaperStore = defineStore("wallpaper", () => {
       selectedIds.value = await setRotationSelection(wallpaperId, selected);
     } catch (cause) {
       selectedIds.value = previous;
-      error.value = String(cause);
+      error.value = errorMessage(cause);
     }
   }
 

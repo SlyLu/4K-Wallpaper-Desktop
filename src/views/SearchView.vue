@@ -4,6 +4,7 @@ import { computed, onMounted, reactive, ref } from "vue";
 import WallpaperGrid from "../components/WallpaperGrid.vue";
 import type { CatalogQuery, ProviderQuery } from "../models/wallpaper";
 import { useWallpaperStore } from "../stores/wallpaper";
+import { errorMessage } from "../utils/error";
 
 const wallpaperStore = useWallpaperStore();
 const filters = reactive({ keyword: "", category: "all", resolution: "0", provider: "all", favorite: "all" });
@@ -58,8 +59,8 @@ async function search(): Promise<void> {
       onlineMessage.value = wallpaperStore.total > 0
         ? `已从在线资源库拉取 ${imported} 条元数据，找到 ${wallpaperStore.total} 张匹配壁纸`
         : "本地和在线资源库均未找到匹配壁纸";
-    } catch {
-      onlineMessage.value = "在线搜索失败，已保留本地搜索结果";
+    } catch (cause) {
+      onlineMessage.value = `在线搜索失败：${errorMessage(cause)}；已保留本地搜索结果`;
     }
   } finally {
     searching.value = false;
@@ -76,8 +77,8 @@ async function searchOnline(): Promise<void> {
     await wallpaperStore.query(catalogQuery());
     const imported = await wallpaperStore.syncOnline(providerQuery());
     onlineMessage.value = `在线资源库已拉取 ${imported} 条元数据，当前找到 ${wallpaperStore.total} 张`;
-  } catch {
-    onlineMessage.value = "在线搜索失败，已保留本地搜索结果";
+  } catch (cause) {
+    onlineMessage.value = `在线搜索失败：${errorMessage(cause)}；已保留本地搜索结果`;
   } finally {
     searching.value = false;
   }

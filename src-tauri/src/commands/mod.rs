@@ -17,7 +17,10 @@ use crate::{
         NewWallpaper, ProviderStatus, RotationExplanation, ScheduleRecord, SmartCollectionRule,
         WallpaperPage, WallpaperProviderSource, WallpaperRecord,
     },
-    provider::{LocalProvider, RemoteWallpaper, WallpaperCategory, WallpaperQuery},
+    provider::{
+        AggregatedProviderService, LocalProvider, ProviderServices, RemoteWallpaper,
+        WallpaperCategory, WallpaperQuery,
+    },
     settings::AppConfig,
     span::{MonitorLayout, SpannedWallpaperService, SpanningApplyResult, calculate_monitor_layout},
     wallpaper::WallpaperService,
@@ -707,10 +710,52 @@ pub fn query_collection_wallpapers(
     state.collections.wallpapers(collection_id, page, page_size)
 }
 
-/// Fetches one Wallhaven metadata page and upserts it without downloading 4K originals.
+/// Fetches one bounded page from all enabled providers without downloading 4K originals.
 #[tauri::command]
-pub async fn sync_catalog(query: WallpaperQuery, state: State<'_, AppState>) -> AppResult<usize> {
-    sync_online_metadata(query, &state).await
+pub async fn sync_catalog(
+    mut query: WallpaperQuery,
+    state: State<'_, AppState>,
+) -> AppResult<usize> {
+    const MAX_PROGRESSIVE_PAGE: u64 = 20;
+    let progressive_refresh = query
+        .keyword
+        .as_deref()
+        .is_none_or(|keyword| keyword.trim().is_empty())
+        && query.page <= 1;
+    if progressive_refresh {
+        // Generic refreshes advance through bounded provider pages instead of rewriting page one forever.
+        let initial_page = if state
+            .database
+            .get_setting("resource_sync_last_success")?
+            .is_some()
+        {
+            // Existing installations already synchronized page one before a cursor was introduced.
+            2
+        } else {
+            1
+        };
+        let stored_page = state
+            .database
+            .get_setting("resource_sync_next_page")?
+            .and_then(|value| value.as_u64())
+            .unwrap_or(initial_page)
+            .clamp(1, MAX_PROGRESSIVE_PAGE);
+        query.page = u32::try_from(stored_page).unwrap_or(1);
+    }
+    let synchronized_page = query.page;
+    let imported = sync_online_metadata(query, &state).await?;
+    if progressive_refresh {
+        let next_page = if u64::from(synchronized_page) >= MAX_PROGRESSIVE_PAGE {
+            1
+        } else {
+            u64::from(synchronized_page) + 1
+        };
+        state.database.set_setting(
+            "resource_sync_next_page",
+            &serde_json::Value::from(next_page),
+        )?;
+    }
+    Ok(imported)
 }
 
 /// Performs the startup sync only when the last successful metadata refresh is stale.
@@ -732,7 +777,7 @@ pub async fn sync_catalog_if_due(state: State<'_, AppState>) -> AppResult<usize>
     {
         return Ok(0);
     }
-    sync_online_metadata(WallpaperQuery::default(), &state).await
+    sync_catalog(WallpaperQuery::default(), state).await
 }
 
 /// Shares the provider-to-SQLite sync path between startup and manual refresh.
@@ -747,7 +792,21 @@ async fn sync_online_metadata(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_owned);
-    let aggregated = state.aggregated_providers.search(query).await?;
+    // Recreate adapters for every manual/startup sync so long-running apps observe proxy changes.
+    let providers = fresh_provider_services(state)?;
+    let aggregated_service = AggregatedProviderService::new(state.database.clone(), providers);
+    let aggregated = match aggregated_service.search(query.clone()).await {
+        Ok(result) => result,
+        Err(first_error @ crate::error::AppError::Provider(_)) => {
+            tracing::warn!(error = %first_error, "all online providers failed; retrying with fresh network clients");
+            tokio::time::sleep(std::time::Duration::from_millis(350)).await;
+            let retry_providers = fresh_provider_services(state)?;
+            AggregatedProviderService::new(state.database.clone(), retry_providers)
+                .search(query)
+                .await?
+        }
+        Err(error) => return Err(error),
+    };
     for (provider, error) in &aggregated.failures {
         tracing::warn!(
             provider,
@@ -779,6 +838,19 @@ async fn sync_online_metadata(
     )?;
     tracing::info!(count = imported, "online wallpaper metadata synchronized");
     Ok(imported)
+}
+
+/// Rebuilds provider clients from current settings and the latest operating-system proxy state.
+fn fresh_provider_services(state: &State<'_, AppState>) -> AppResult<ProviderServices> {
+    let providers = ProviderServices::new(&state.paths)?;
+    let api_key = state
+        .settings
+        .lock()
+        .map_err(|_| crate::error::AppError::configuration("settings mutex was poisoned"))?
+        .thegamesdb_api_key
+        .clone();
+    providers.configure_thegamesdb_api_key(api_key.as_deref())?;
+    Ok(providers)
 }
 
 /// Scans one explicitly selected directory, creates thumbnails, and indexes original files in place.

@@ -15,6 +15,7 @@ import { BUILTIN_THEMES } from "../themes/builtin";
 import { getAppStatus } from "../api/platform";
 import type { AppStatus } from "../models/monitor";
 import { providerLabel } from "../utils/provider";
+import { errorMessage } from "../utils/error";
 
 const settingsStore = useSettingsStore();
 const wallpaperStore = useWallpaperStore();
@@ -163,9 +164,15 @@ async function removeDirectory(path: string): Promise<void> {
 
 /** Runs the product-required manual metadata refresh using current safe defaults. */
 async function refreshResources(): Promise<void> {
-  const count = await wallpaperStore.syncOnline({ category: "all", minWidth: 3840, minHeight: 2160, aspectRatio: "16:9", page: 1, pageSize: 24, sort: "latest", safety: "sfw" });
-  providers.value = await listProviders();
-  message.value = `已聚合刷新 ${count} 条多图源元数据`;
+  message.value = "正在刷新全部已启用图源…";
+  try {
+    const count = await wallpaperStore.syncOnline({ category: "all", minWidth: 3840, minHeight: 2160, aspectRatio: "16:9", page: 1, pageSize: 24, sort: "latest", safety: "sfw" });
+    message.value = `已聚合刷新 ${count} 条多图源元数据`;
+  } catch (cause) {
+    message.value = `在线资源刷新失败：${errorMessage(cause)}`;
+  } finally {
+    providers.value = await listProviders();
+  }
 }
 
 const systemThemeQuery = window.matchMedia("(prefers-color-scheme: light)");

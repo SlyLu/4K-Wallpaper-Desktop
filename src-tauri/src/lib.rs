@@ -42,7 +42,7 @@ use paths::AppPaths;
 #[cfg(not(test))]
 use platform::PlatformServices;
 #[cfg(not(test))]
-use provider::{AggregatedProviderService, ProviderServices};
+use provider::ProviderServices;
 #[cfg(not(test))]
 use scheduler::SchedulerService;
 #[cfg(not(test))]
@@ -61,7 +61,6 @@ pub struct AppState {
     pub paths: AppPaths,
     pub platform: PlatformServices,
     pub providers: ProviderServices,
-    pub aggregated_providers: AggregatedProviderService,
     pub images: ImageProcessor,
     pub scheduler: SchedulerService,
     pub collections: CollectionService,
@@ -76,7 +75,6 @@ impl AppState {
         paths: AppPaths,
         platform: PlatformServices,
         providers: ProviderServices,
-        aggregated_providers: AggregatedProviderService,
         images: ImageProcessor,
         scheduler: SchedulerService,
         collections: CollectionService,
@@ -87,7 +85,6 @@ impl AppState {
             paths,
             platform,
             providers,
-            aggregated_providers,
             images,
             scheduler,
             collections,
@@ -156,8 +153,6 @@ pub fn run() -> AppResult<()> {
             let platform = platform::create_platform_services()?;
             let providers = ProviderServices::new(&paths)?;
             providers.configure_thegamesdb_api_key(config.thegamesdb_api_key.as_deref())?;
-            let aggregated_providers =
-                AggregatedProviderService::new(database.clone(), providers.clone());
             let images =
                 ImageProcessor::new(paths.thumbnails_dir.clone(), paths.processed_dir.clone());
             let scheduler = SchedulerService::new();
@@ -167,7 +162,6 @@ pub fn run() -> AppResult<()> {
                 paths,
                 platform,
                 providers,
-                aggregated_providers,
                 images,
                 scheduler.clone(),
                 collections,
