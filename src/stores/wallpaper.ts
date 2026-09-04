@@ -7,6 +7,7 @@ import {
   downloadWallpaper,
   getWallpaperOriginalBytes,
   getWallpaperThumbnail,
+  refreshWallpaperThumbnail,
   queryCatalog,
   setWallpaperBlacklisted,
   setWallpaperFavorite,
@@ -270,6 +271,17 @@ export const useWallpaperStore = defineStore("wallpaper", () => {
     }
   }
 
+  /** Repairs one thumbnail without downloading its original or reloading the catalog page. */
+  async function repairThumbnail(wallpaperId: number): Promise<void> {
+    const data = await refreshWallpaperThumbnail(wallpaperId);
+    // Navigation may finish before a slow provider; never retain an off-page Blob URL.
+    if (!wallpapers.value.some((wallpaper) => wallpaper.id === wallpaperId)) return;
+    const oldUrl = thumbnailUrls.value[wallpaperId];
+    if (oldUrl) URL.revokeObjectURL(oldUrl);
+    const blob = new Blob([new Uint8Array(data.bytes)], { type: data.mimeType });
+    thumbnailUrls.value = { ...thumbnailUrls.value, [wallpaperId]: URL.createObjectURL(blob) };
+  }
+
   /** Revokes every Blob URL created by this store to avoid retaining image memory. */
   function releaseThumbnails(): void {
     Object.values(thumbnailUrls.value).forEach((url) => URL.revokeObjectURL(url));
@@ -296,6 +308,7 @@ export const useWallpaperStore = defineStore("wallpaper", () => {
     goToPage,
     syncOnline,
     thumbnailFor,
+    repairThumbnail,
     toggleSelected,
     restoreSelection,
     toggleBulkSelected,

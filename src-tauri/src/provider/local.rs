@@ -185,6 +185,7 @@ fn read_local_metadata(path: &Path) -> AppResult<RemoteWallpaper> {
         source_page_url: None,
         original_url: None,
         thumbnail_url: None,
+        thumbnail_local_path: None,
         local_path: Some(path.to_path_buf()),
         width: Some(metadata.width),
         height: Some(metadata.height),

@@ -278,6 +278,7 @@ fn map_images(
                 source_page_url: Some(format!("https://thegamesdb.net/game.php?id={game_id}")),
                 original_url: Some(format!("{}{}", data.base_url.original, image.filename)),
                 thumbnail_url: Some(format!("{}{}", data.base_url.large, image.filename)),
+                thumbnail_local_path: None,
                 local_path: None,
                 width: Some(width),
                 height: Some(height),

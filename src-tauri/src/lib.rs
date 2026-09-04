@@ -196,6 +196,7 @@ pub fn run() -> AppResult<()> {
             commands::set_wallpaper_for_monitor,
             commands::list_wallpapers,
             commands::get_wallpaper_thumbnail,
+            commands::refresh_wallpaper_thumbnail,
             commands::inspect_image_file,
             commands::create_thumbnail,
             commands::prepare_wallpaper_for_monitor,

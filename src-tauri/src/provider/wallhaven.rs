@@ -287,6 +287,7 @@ fn map_listing(value: Listing) -> RemoteWallpaper {
         source_page_url: Some(value.url),
         original_url: Some(value.path),
         thumbnail_url: Some(value.thumbs.large),
+        thumbnail_local_path: None,
         local_path: None,
         width: Some(value.dimension_x),
         height: Some(value.dimension_y),

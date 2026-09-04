@@ -1,4 +1,6 @@
 mod aggregated;
+#[cfg(not(test))]
+pub(crate) use aggregated::cache_thumbnail;
 mod art_institute;
 mod download;
 mod local;
@@ -94,6 +96,9 @@ pub struct RemoteWallpaper {
     pub source_page_url: Option<String>,
     pub original_url: Option<String>,
     pub thumbnail_url: Option<String>,
+    /// Optional application-owned cache populated while online metadata is synchronized.
+    #[serde(default)]
+    pub thumbnail_local_path: Option<PathBuf>,
     pub local_path: Option<PathBuf>,
     pub width: Option<u32>,
     pub height: Option<u32>,
@@ -249,6 +254,7 @@ mod query_tests {
             source_page_url: None,
             original_url: None,
             thumbnail_url: None,
+            thumbnail_local_path: None,
             local_path: None,
             width: Some(3840),
             height: Some(2160),

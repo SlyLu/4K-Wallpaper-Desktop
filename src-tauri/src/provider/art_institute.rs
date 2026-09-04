@@ -209,6 +209,7 @@ fn map_artwork(artwork: Artwork, min_width: u32, min_height: u32) -> Option<Remo
         source_page_url: Some(format!("https://www.artic.edu/artworks/{}", artwork.id)),
         original_url: Some(format!("{IIIF_ROOT}/{image_id}/full/full/0/default.jpg")),
         thumbnail_url: Some(format!("{IIIF_ROOT}/{image_id}/full/843,/0/default.jpg")),
+        thumbnail_local_path: None,
         local_path: None,
         width: Some(dimensions.width),
         height: Some(dimensions.height),

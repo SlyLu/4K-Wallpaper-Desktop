@@ -286,6 +286,7 @@ fn map_page(page: Page, min_width: u32, min_height: u32) -> Option<RemoteWallpap
         source_page_url: Some(info.descriptionurl),
         original_url: Some(info.url),
         thumbnail_url: info.thumburl,
+        thumbnail_local_path: None,
         local_path: None,
         width: Some(info.width),
         height: Some(info.height),

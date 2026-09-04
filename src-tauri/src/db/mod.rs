@@ -374,6 +374,7 @@ impl Database {
                         source_page_url = CASE WHEN (?2 * ?3) > (width * height) THEN ?5 ELSE source_page_url END,
                         original_url = CASE WHEN (?2 * ?3) > (width * height) THEN ?6 ELSE original_url END,
                         thumbnail_url = CASE WHEN (?2 * ?3) > (width * height) THEN ?7 ELSE thumbnail_url END,
+                        thumbnail_local_path = COALESCE(?13, thumbnail_local_path),
                         width = CASE WHEN (?2 * ?3) > (width * height) THEN ?2 ELSE width END,
                         height = CASE WHEN (?2 * ?3) > (width * height) THEN ?3 ELSE height END,
                         aspect_ratio = CASE WHEN (?2 * ?3) > (width * height) THEN ?8 ELSE aspect_ratio END,
@@ -395,6 +396,7 @@ impl Database {
                         wallpaper.mime_type,
                         wallpaper.synced_at,
                         wallpaper.preset,
+                        wallpaper.thumbnail_local_path,
                     ],
                 )?;
                 wallpaper_id
@@ -2414,6 +2416,15 @@ impl Database {
             .transpose()
     }
 
+    /// Repairs a cache reference without changing favorites, rotation selection, or source metadata.
+    pub fn set_thumbnail_path(&self, wallpaper_id: i64, path: &str) -> AppResult<()> {
+        self.lock()?.execute(
+            "UPDATE wallpaper SET thumbnail_local_path = ?2 WHERE id = ?1 AND blacklisted = 0",
+            params![wallpaper_id, path],
+        )?;
+        Ok(())
+    }
+
     /// Returns only the cached thumbnail path needed by the binary thumbnail command.
     pub fn thumbnail_path(&self, wallpaper_id: i64) -> AppResult<Option<String>> {
         let connection = self.lock()?;
@@ -2790,6 +2801,35 @@ mod tests {
         assert_eq!(page.total, 1);
         assert_eq!(page.items[0].remote_id, "abc123");
         assert_eq!(page.items[0].tags, vec!["lake", "mountain"]);
+        Ok(())
+    }
+
+    /// Same-resolution refreshes must backfill old cacheless rows without losing user state.
+    #[test]
+    fn refresh_backfills_thumbnail_and_preserves_favorite() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let directory = tempfile::tempdir()?;
+        let database = Database::open(&directory.path().join("thumbnail.db"))?;
+        let mut wallpaper = sample_wallpaper();
+        wallpaper.thumbnail_local_path = None;
+        database.upsert_wallpapers(std::slice::from_ref(&wallpaper))?;
+        let id = database.list_wallpapers(1, 24, true)?.items[0].id;
+        database
+            .lock()?
+            .execute("UPDATE wallpaper SET favorite = 1 WHERE id = ?1", [id])?;
+        wallpaper.thumbnail_local_path = Some("cache/repaired.png".into());
+        database.upsert_wallpapers(std::slice::from_ref(&wallpaper))?;
+        let updated = database.get_wallpaper(id)?;
+        assert!(updated.favorite);
+        assert_eq!(
+            updated.thumbnail_local_path.as_deref(),
+            Some("cache/repaired.png")
+        );
+        database.set_thumbnail_path(id, "cache/manual.webp")?;
+        assert_eq!(
+            database.thumbnail_path(id)?.as_deref(),
+            Some("cache/manual.webp")
+        );
         Ok(())
     }
 

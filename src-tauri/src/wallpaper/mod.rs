@@ -154,6 +154,7 @@ fn record_to_remote(wallpaper: &WallpaperRecord) -> RemoteWallpaper {
         source_page_url: wallpaper.source_page_url.clone(),
         original_url: wallpaper.original_url.clone(),
         thumbnail_url: wallpaper.thumbnail_url.clone(),
+        thumbnail_local_path: wallpaper.thumbnail_local_path.as_ref().map(PathBuf::from),
         local_path: wallpaper.local_path.as_ref().map(PathBuf::from),
         width: Some(wallpaper.width),
         height: Some(wallpaper.height),

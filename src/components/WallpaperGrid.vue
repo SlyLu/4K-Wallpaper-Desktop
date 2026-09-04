@@ -17,6 +17,9 @@ const monitorStore = useMonitorStore();
 const actionMessage = ref("");
 const jumpPage = ref(1);
 const bulkActive = ref(false);
+const failedThumbnailIds = ref<Set<number>>(new Set());
+const thumbnailRetries = ref<Record<number, number>>({});
+const thumbnailPending = ref<Record<number, boolean>>({});
 const currentPageBulkSelected = computed(() =>
   wallpaperStore.wallpapers.length > 0
   && wallpaperStore.wallpapers.every((wallpaper) => Boolean(wallpaperStore.bulkSelections[wallpaper.id])),
@@ -47,6 +50,45 @@ function availabilityLabel(wallpaper: WallpaperRecord): string {
 }
 
 watch(() => wallpaperStore.page, (page) => { jumpPage.value = page; }, { immediate: true });
+watch(
+  () => wallpaperStore.wallpapers.map((wallpaper) => `${wallpaper.id}:${wallpaper.thumbnailLocalPath ?? ""}:${wallpaper.thumbnailUrl ?? ""}`).join(","),
+  () => {
+    failedThumbnailIds.value = new Set();
+    thumbnailRetries.value = {};
+  },
+);
+
+/** Uses the cached Blob when available without modifying signed provider URLs. */
+function thumbnailSource(wallpaper: WallpaperRecord): string {
+  return wallpaperStore.thumbnailFor(wallpaper);
+}
+
+/** Replaces the browser's broken-image icon with an actionable, provider-neutral fallback. */
+function markThumbnailFailed(wallpaperId: number): void {
+  failedThumbnailIds.value = new Set(failedThumbnailIds.value).add(wallpaperId);
+  if (!thumbnailRetries.value[wallpaperId]) void retryThumbnail(wallpaperId);
+}
+
+/** Recreates only the failed image so transient CDN and proxy failures can recover. */
+async function retryThumbnail(wallpaperId: number): Promise<void> {
+  if (thumbnailPending.value[wallpaperId]) return;
+  thumbnailPending.value = { ...thumbnailPending.value, [wallpaperId]: true };
+  thumbnailRetries.value = {
+    ...thumbnailRetries.value,
+    [wallpaperId]: (thumbnailRetries.value[wallpaperId] ?? 0) + 1,
+  };
+  try {
+    await wallpaperStore.repairThumbnail(wallpaperId);
+    const failed = new Set(failedThumbnailIds.value);
+    failed.delete(wallpaperId);
+    failedThumbnailIds.value = failed;
+  } catch {
+    // Keep the explicit fallback; a 403 must never cause an infinite image reload loop.
+    failedThumbnailIds.value = new Set(failedThumbnailIds.value).add(wallpaperId);
+  } finally {
+    thumbnailPending.value = { ...thumbnailPending.value, [wallpaperId]: false };
+  }
+}
 
 /** Applies a card through the Rust Core to the current primary display. */
 async function quickApply(wallpaperId: number): Promise<void> {
@@ -167,7 +209,19 @@ onBeforeUnmount(() => wallpaperStore.clearBulkSelected());
       @click="handleCardClick(wallpaper)"
       @keydown.enter="handleCardClick(wallpaper)"
     >
-      <img :src="wallpaperStore.thumbnailFor(wallpaper)" :alt="wallpaper.name" loading="lazy" />
+      <img
+        v-if="thumbnailSource(wallpaper) && !failedThumbnailIds.has(wallpaper.id)"
+        :key="`${wallpaper.id}-${thumbnailRetries[wallpaper.id] ?? 0}`"
+        :src="thumbnailSource(wallpaper)"
+        :alt="wallpaper.name"
+        loading="lazy"
+        @error="markThumbnailFailed(wallpaper.id)"
+      />
+      <div v-else class="thumbnail-fallback">
+        <span>{{ thumbnailPending[wallpaper.id] ? "正在恢复缩略图…" : "缩略图暂不可用" }}</span>
+        <small>{{ wallpaper.provider }}</small>
+        <button class="glass compact" :disabled="thumbnailPending[wallpaper.id]" @keydown.enter.stop @click.stop="retryThumbnail(wallpaper.id)">重新加载</button>
+      </div>
       <div class="card-shade"></div>
       <button
         v-if="!bulkActive"

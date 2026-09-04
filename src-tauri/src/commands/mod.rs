@@ -150,12 +150,52 @@ pub fn get_wallpaper_thumbnail(
         .as_deref()
     {
         Some("png") => "image/png",
+        Some("webp") => "image/webp",
         _ => "image/jpeg",
     };
     Ok(ThumbnailData {
         mime_type,
         bytes: std::fs::read(canonical_thumbnail)?,
     })
+}
+
+/// Repairs existing metadata thumbnails without downloading originals or altering user selections.
+#[tauri::command]
+pub async fn refresh_wallpaper_thumbnail(
+    wallpaper_id: i64,
+    state: State<'_, AppState>,
+) -> AppResult<ThumbnailData> {
+    let wallpaper = state.database.get_wallpaper(wallpaper_id)?;
+    if wallpaper.blacklisted {
+        return Err(crate::error::AppError::Wallpaper(
+            "wallpaper is excluded".into(),
+        ));
+    }
+    let path = if let Some(local_path) = wallpaper
+        .local_path
+        .filter(|path| std::path::Path::new(path).is_file())
+    {
+        let images = state.images.clone();
+        tokio::task::spawn_blocking(move || {
+            images.create_thumbnail(std::path::Path::new(&local_path), Some(640), Some(360))
+        })
+        .await
+        .map_err(|error| crate::error::AppError::Image(error.to_string()))??
+        .path
+    } else {
+        let url = wallpaper
+            .thumbnail_url
+            .ok_or_else(|| crate::error::AppError::Image("thumbnail URL is unavailable".into()))?;
+        crate::provider::cache_thumbnail(&reqwest::Client::new(), &state.paths.thumbnails_dir, &url)
+            .await?
+            .0
+            .display()
+            .to_string()
+    };
+    state.database.set_thumbnail_path(wallpaper_id, &path)?;
+    let data = get_wallpaper_thumbnail(wallpaper_id, state.clone())?;
+    enforce_cache_best_effort(&state);
+    Ok(data)
 }
 
 /// Decodes one explicitly selected image on a blocking worker and returns trusted metadata.
@@ -744,6 +784,7 @@ pub async fn sync_catalog(
     }
     let synchronized_page = query.page;
     let imported = sync_online_metadata(query, &state).await?;
+    enforce_cache_best_effort(&state);
     if progressive_refresh {
         let next_page = if u64::from(synchronized_page) >= MAX_PROGRESSIVE_PAGE {
             1
@@ -794,16 +835,24 @@ async fn sync_online_metadata(
         .map(str::to_owned);
     // Recreate adapters for every manual/startup sync so long-running apps observe proxy changes.
     let providers = fresh_provider_services(state)?;
-    let aggregated_service = AggregatedProviderService::new(state.database.clone(), providers);
+    let aggregated_service = AggregatedProviderService::new(
+        state.database.clone(),
+        providers,
+        state.paths.thumbnails_dir.clone(),
+    );
     let aggregated = match aggregated_service.search(query.clone()).await {
         Ok(result) => result,
         Err(first_error @ crate::error::AppError::Provider(_)) => {
             tracing::warn!(error = %first_error, "all online providers failed; retrying with fresh network clients");
             tokio::time::sleep(std::time::Duration::from_millis(350)).await;
             let retry_providers = fresh_provider_services(state)?;
-            AggregatedProviderService::new(state.database.clone(), retry_providers)
-                .search(query)
-                .await?
+            AggregatedProviderService::new(
+                state.database.clone(),
+                retry_providers,
+                state.paths.thumbnails_dir.clone(),
+            )
+            .search(query)
+            .await?
         }
         Err(error) => return Err(error),
     };
@@ -823,7 +872,18 @@ async fn sync_online_metadata(
     let records: Vec<_> = aggregated
         .wallpapers
         .into_iter()
-        .map(|wallpaper| remote_to_new(wallpaper, &requested_category, &synced_at, None))
+        .map(|wallpaper| {
+            let thumbnail_local_path = wallpaper
+                .thumbnail_local_path
+                .as_ref()
+                .map(|path| path.display().to_string());
+            remote_to_new(
+                wallpaper,
+                &requested_category,
+                &synced_at,
+                thumbnail_local_path,
+            )
+        })
         .collect();
     let imported = state.database.upsert_wallpapers(&records)?;
     if let Some(keyword) = requested_keyword.as_deref() {

@@ -81,6 +81,11 @@ export function getWallpaperThumbnail(wallpaperId: number): Promise<ThumbnailDat
   return invoke<ThumbnailData>("get_wallpaper_thumbnail", { wallpaperId });
 }
 
+/** Repairs a missing thumbnail through the bounded Rust cache/download pipeline. */
+export function refreshWallpaperThumbnail(wallpaperId: number): Promise<ThumbnailData> {
+  return invoke<ThumbnailData>("refresh_wallpaper_thumbnail", { wallpaperId });
+}
+
 /** Downloads, validates, and content-deduplicates one 4K original. */
 export function downloadWallpaper(wallpaperId: number): Promise<WallpaperRecord> {
   return invoke<WallpaperRecord>("download_wallpaper", { wallpaperId });

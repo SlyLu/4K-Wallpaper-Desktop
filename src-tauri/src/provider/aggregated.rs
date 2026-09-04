@@ -1,7 +1,16 @@
-use std::{collections::HashSet, sync::Arc, time::Instant};
+use std::{
+    collections::HashSet,
+    path::{Path, PathBuf},
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::{Duration, Instant},
+};
 
 use futures_util::{StreamExt, future::join_all, stream};
 use reqwest::Client;
+use sha2::{Digest, Sha256};
 
 use crate::{
     db::Database,
@@ -10,6 +19,9 @@ use crate::{
 };
 
 use super::{ProviderServices, RemoteWallpaper, WallpaperProvider, WallpaperQuery};
+
+static THUMBNAIL_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(3);
+static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 /// Partial-success result used to keep one provider failure isolated from other sources.
 pub struct AggregatedProviderResult {
@@ -23,15 +35,21 @@ pub struct AggregatedProviderService {
     database: Database,
     providers: ProviderServices,
     client: Client,
+    thumbnail_directory: PathBuf,
 }
 
 impl AggregatedProviderService {
     /// Shares the built-in registry and persisted provider configuration.
-    pub fn new(database: Database, providers: ProviderServices) -> Self {
+    pub fn new(
+        database: Database,
+        providers: ProviderServices,
+        thumbnail_directory: PathBuf,
+    ) -> Self {
         Self {
             database,
             providers,
             client: Client::new(),
+            thumbnail_directory,
         }
     }
 
@@ -118,20 +136,31 @@ impl AggregatedProviderService {
         wallpapers: Vec<RemoteWallpaper>,
     ) -> Vec<RemoteWallpaper> {
         let client = self.client.clone();
+        let thumbnail_directory = self.thumbnail_directory.clone();
         let mut results = stream::iter(wallpapers.into_iter().enumerate().map(
             move |(position, mut wallpaper)| {
                 let client = client.clone();
+                let thumbnail_directory = thumbnail_directory.clone();
                 async move {
-                    if let Some(url) = wallpaper.thumbnail_url.as_deref()
-                        && let Ok(bytes) = download_thumbnail(&client, url).await
-                    {
-                        wallpaper.perceptual_hash = perceptual_hash_bytes(&bytes).ok();
+                    if let Some(url) = wallpaper.thumbnail_url.as_deref() {
+                        match cache_thumbnail(&client, &thumbnail_directory, url).await {
+                            Ok((path, hash)) => {
+                                wallpaper.thumbnail_local_path = Some(path);
+                                wallpaper.perceptual_hash = Some(hash);
+                            }
+                            Err(error) => tracing::warn!(
+                                provider = wallpaper.provider,
+                                remote_id = wallpaper.remote_id,
+                                %error,
+                                "thumbnail unavailable; retaining metadata without deleting user state"
+                            ),
+                        }
                     }
                     (position, wallpaper)
                 }
             },
         ))
-        .buffer_unordered(8)
+        .buffer_unordered(3)
         .collect::<Vec<_>>()
         .await;
         results.sort_unstable_by_key(|(position, _)| *position);
@@ -142,10 +171,93 @@ impl AggregatedProviderService {
     }
 }
 
+/// Reuses a validated local thumbnail before networking; all callers share three download slots.
+pub(crate) async fn cache_thumbnail(
+    client: &Client,
+    directory: &Path,
+    url: &str,
+) -> AppResult<(PathBuf, String)> {
+    let parsed =
+        reqwest::Url::parse(url).map_err(|_| AppError::Provider("invalid thumbnail URL".into()))?;
+    if parsed.scheme() != "https" {
+        return Err(AppError::Provider("thumbnail URLs must use HTTPS".into()));
+    }
+    let _slot = THUMBNAIL_SLOTS
+        .acquire()
+        .await
+        .map_err(|_| AppError::Image("thumbnail queue is closed".into()))?;
+    let key = format!("{:x}", Sha256::digest(url.as_bytes()));
+    for extension in ["jpg", "png", "webp"] {
+        let path = directory.join(format!("online-{key}.{extension}"));
+        if let Ok(metadata) = tokio::fs::metadata(&path).await
+            && metadata.len() <= 8 * 1024 * 1024
+            && let Ok(bytes) = tokio::fs::read(&path).await
+            && let Ok(hash) = perceptual_hash_bytes(&bytes)
+        {
+            return Ok((path, hash));
+        }
+    }
+    // A transport failure gets one retry; access-denied responses must not be hammered.
+    let bytes = match download_thumbnail(client, url).await {
+        Ok(bytes) => bytes,
+        Err(AppError::Network(_)) => {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            download_thumbnail(client, url).await?
+        }
+        Err(error) => return Err(error),
+    };
+    let hash = perceptual_hash_bytes(&bytes)?;
+    let path = persist_thumbnail(directory, url, &bytes).await?;
+    Ok((path, hash))
+}
+
+/// Persists validated provider bytes atomically under a URL-derived stable cache key.
+async fn persist_thumbnail(
+    directory: &std::path::Path,
+    url: &str,
+    bytes: &[u8],
+) -> AppResult<PathBuf> {
+    let format = image::guess_format(bytes)?;
+    let extension = match format {
+        image::ImageFormat::Jpeg => "jpg",
+        image::ImageFormat::Png => "png",
+        image::ImageFormat::WebP => "webp",
+        _ => {
+            return Err(AppError::Image(
+                "unsupported provider thumbnail format".into(),
+            ));
+        }
+    };
+    let key = format!("{:x}", Sha256::digest(url.as_bytes()));
+    let target = directory.join(format!("online-{key}.{extension}"));
+    tokio::fs::create_dir_all(directory).await?;
+    let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let temporary = directory.join(format!(
+        "online-{key}-{}-{sequence}.tmp",
+        std::process::id()
+    ));
+    tokio::fs::write(&temporary, bytes).await?;
+    if let Err(error) = tokio::fs::rename(&temporary, &target).await {
+        let _ = tokio::fs::remove_file(&temporary).await;
+        return Err(error.into());
+    }
+    Ok(target)
+}
+
 /// Streams at most 8 MiB so a provider cannot force an unbounded thumbnail allocation.
 async fn download_thumbnail(client: &Client, url: &str) -> AppResult<Vec<u8>> {
     const MAX_BYTES: usize = 8 * 1024 * 1024;
-    let response = client.get(url).send().await?.error_for_status()?;
+    let response = client
+        .get(url)
+        .timeout(Duration::from_secs(8))
+        .send()
+        .await?;
+    if !response.status().is_success() {
+        return Err(AppError::Provider(format!(
+            "thumbnail server returned HTTP {}",
+            response.status().as_u16()
+        )));
+    }
     if response
         .content_length()
         .is_some_and(|length| length > MAX_BYTES as u64)
@@ -191,7 +303,7 @@ fn fair_interleave(mut sources: Vec<Vec<RemoteWallpaper>>) -> Vec<RemoteWallpape
 
 #[cfg(test)]
 mod tests {
-    use super::fair_interleave;
+    use super::{cache_thumbnail, fair_interleave, persist_thumbnail};
     use crate::provider::RemoteWallpaper;
 
     /// Creates provider-tagged fixtures without involving network adapters.
@@ -203,6 +315,7 @@ mod tests {
             source_page_url: None,
             original_url: None,
             thumbnail_url: None,
+            thumbnail_local_path: None,
             local_path: None,
             width: Some(3840),
             height: Some(2160),
@@ -236,5 +349,42 @@ mod tests {
             .map(|wallpaper| wallpaper.remote_id.as_str())
             .collect();
         assert_eq!(ids, ["a1", "b1", "a2", "a3"]);
+    }
+
+    /// A cached image must remain usable when its remote host is offline or blocked.
+    #[tokio::test]
+    async fn reuses_valid_cache_without_network_and_rejects_html()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let url = "https://thumbnail.invalid/image.png";
+        let mut output = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgb8(32, 18).write_to(&mut output, image::ImageFormat::Png)?;
+        let bytes = output.into_inner();
+        let path = persist_thumbnail(directory.path(), url, &bytes).await?;
+        let (cached, hash) =
+            cache_thumbnail(&reqwest::Client::new(), directory.path(), url).await?;
+        assert_eq!(cached, path);
+        assert!(!hash.is_empty());
+        assert_eq!(std::fs::read(&cached)?, bytes);
+        assert!(
+            persist_thumbnail(
+                directory.path(),
+                "https://thumbnail.invalid/html",
+                b"<html>403</html>"
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(std::fs::read_dir(directory.path())?.count(), 1);
+        assert!(
+            cache_thumbnail(
+                &reqwest::Client::new(),
+                directory.path(),
+                "file:///private.png"
+            )
+            .await
+            .is_err()
+        );
+        Ok(())
     }
 }

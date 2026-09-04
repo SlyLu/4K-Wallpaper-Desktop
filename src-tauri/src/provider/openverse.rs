@@ -196,6 +196,7 @@ fn map_image(image: OpenverseImage, min_width: u32, min_height: u32) -> Option<R
         source_page_url: image.foreign_landing_url,
         original_url: Some(image.url),
         thumbnail_url: image.thumbnail.filter(|url| url.starts_with("https://")),
+        thumbnail_local_path: None,
         local_path: None,
         width: Some(width),
         height: Some(height),
