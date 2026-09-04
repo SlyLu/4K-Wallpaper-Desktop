@@ -136,10 +136,12 @@ impl AggregatedProviderService {
         wallpapers: Vec<RemoteWallpaper>,
     ) -> Vec<RemoteWallpaper> {
         let client = self.client.clone();
+        let database = self.database.clone();
         let thumbnail_directory = self.thumbnail_directory.clone();
         let mut results = stream::iter(wallpapers.into_iter().enumerate().map(
             move |(position, mut wallpaper)| {
                 let client = client.clone();
+                let database = database.clone();
                 let thumbnail_directory = thumbnail_directory.clone();
                 async move {
                     if let Some(url) = wallpaper.thumbnail_url.as_deref() {
@@ -148,12 +150,19 @@ impl AggregatedProviderService {
                                 wallpaper.thumbnail_local_path = Some(path);
                                 wallpaper.perceptual_hash = Some(hash);
                             }
-                            Err(error) => tracing::warn!(
+                            Err(error) => {
+                                if matches!(error, AppError::Provider(_) | AppError::Image(_)) {
+                                    if let Err(db_error) = database.mark_thumbnail_failed(&wallpaper.provider, &wallpaper.remote_id) {
+                                        tracing::warn!(%db_error, "could not record thumbnail quarantine");
+                                    }
+                                }
+                                tracing::warn!(
                                 provider = wallpaper.provider,
                                 remote_id = wallpaper.remote_id,
                                 %error,
                                 "thumbnail unavailable; retaining metadata without deleting user state"
-                            ),
+                                );
+                            }
                         }
                     }
                     (position, wallpaper)
@@ -166,6 +175,8 @@ impl AggregatedProviderService {
         results.sort_unstable_by_key(|(position, _)| *position);
         results
             .into_iter()
+            // Do not import unusable new cards; later successful refreshes can restore them.
+            .filter(|(_, wallpaper)| wallpaper.thumbnail_local_path.is_some())
             .map(|(_, wallpaper)| wallpaper)
             .collect()
     }

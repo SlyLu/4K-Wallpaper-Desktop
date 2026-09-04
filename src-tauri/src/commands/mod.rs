@@ -166,6 +166,7 @@ pub async fn refresh_wallpaper_thumbnail(
     state: State<'_, AppState>,
 ) -> AppResult<ThumbnailData> {
     let wallpaper = state.database.get_wallpaper(wallpaper_id)?;
+    let has_local_reference = wallpaper.local_path.is_some();
     if wallpaper.blacklisted {
         return Err(crate::error::AppError::Wallpaper(
             "wallpaper is excluded".into(),
@@ -183,14 +184,49 @@ pub async fn refresh_wallpaper_thumbnail(
         .map_err(|error| crate::error::AppError::Image(error.to_string()))??
         .path
     } else {
-        let url = wallpaper
-            .thumbnail_url
-            .ok_or_else(|| crate::error::AppError::Image("thumbnail URL is unavailable".into()))?;
-        crate::provider::cache_thumbnail(&reqwest::Client::new(), &state.paths.thumbnails_dir, &url)
-            .await?
-            .0
-            .display()
-            .to_string()
+        let url = match wallpaper.thumbnail_url {
+            Some(url) => url,
+            None if !has_local_reference => {
+                state
+                    .database
+                    .mark_thumbnail_failed(&wallpaper.provider, &wallpaper.remote_id)?;
+                return Err(crate::error::AppError::ThumbnailUnavailable(
+                    "thumbnail URL is unavailable".into(),
+                ));
+            }
+            None => {
+                return Err(crate::error::AppError::Image(
+                    "local file is unavailable".into(),
+                ));
+            }
+        };
+        match crate::provider::cache_thumbnail(
+            &reqwest::Client::new(),
+            &state.paths.thumbnails_dir,
+            &url,
+        )
+        .await
+        {
+            Ok(cached) => cached,
+            Err(
+                error @ (crate::error::AppError::Provider(_) | crate::error::AppError::Image(_)),
+            ) => {
+                // Offline local files must remain visible for gallery management.
+                if has_local_reference {
+                    return Err(error);
+                }
+                state
+                    .database
+                    .mark_thumbnail_failed(&wallpaper.provider, &wallpaper.remote_id)?;
+                return Err(crate::error::AppError::ThumbnailUnavailable(
+                    error.to_string(),
+                ));
+            }
+            Err(error) => return Err(error),
+        }
+        .0
+        .display()
+        .to_string()
     };
     state.database.set_thumbnail_path(wallpaper_id, &path)?;
     let data = get_wallpaper_thumbnail(wallpaper_id, state.clone())?;

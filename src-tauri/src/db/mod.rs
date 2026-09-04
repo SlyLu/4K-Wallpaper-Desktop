@@ -15,6 +15,7 @@ use crate::{
 };
 
 const MIGRATIONS: &[(i64, &str)] = &[
+    // Keep migration order append-only; existing installations retain all user state.
     (
         1,
         include_str!("../../../migrations/0001_phase0_bootstrap.sql"),
@@ -62,6 +63,10 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (
         12,
         include_str!("../../../migrations/0012_thegamesdb_provider.sql"),
+    ),
+    (
+        13,
+        include_str!("../../../migrations/0013_thumbnail_availability.sql"),
     ),
 ];
 
@@ -375,6 +380,7 @@ impl Database {
                         original_url = CASE WHEN (?2 * ?3) > (width * height) THEN ?6 ELSE original_url END,
                         thumbnail_url = CASE WHEN (?2 * ?3) > (width * height) THEN ?7 ELSE thumbnail_url END,
                         thumbnail_local_path = COALESCE(?13, thumbnail_local_path),
+                        thumbnail_failed = CASE WHEN ?13 IS NOT NULL THEN 0 ELSE thumbnail_failed END,
                         width = CASE WHEN (?2 * ?3) > (width * height) THEN ?2 ELSE width END,
                         height = CASE WHEN (?2 * ?3) > (width * height) THEN ?3 ELSE height END,
                         aspect_ratio = CASE WHEN (?2 * ?3) > (width * height) THEN ?8 ELSE aspect_ratio END,
@@ -415,6 +421,7 @@ impl Database {
                     original_url = excluded.original_url,
                     thumbnail_url = excluded.thumbnail_url,
                     thumbnail_local_path = COALESCE(excluded.thumbnail_local_path, wallpaper.thumbnail_local_path),
+                    thumbnail_failed = CASE WHEN excluded.thumbnail_local_path IS NOT NULL THEN 0 ELSE wallpaper.thumbnail_failed END,
                     local_path = CASE WHEN excluded.provider = 'local' THEN excluded.local_path ELSE wallpaper.local_path END,
                     width = excluded.width,
                     height = excluded.height,
@@ -602,7 +609,7 @@ impl Database {
         let offset = i64::from(page - 1) * i64::from(page_size);
         let connection = self.lock()?;
         let total: i64 = connection.query_row(
-            "SELECT COUNT(*) FROM wallpaper WHERE blacklisted = 0 AND (?1 = 0 OR preset = 1)",
+            "SELECT COUNT(*) FROM wallpaper WHERE blacklisted = 0 AND (thumbnail_failed = 0 OR local_path IS NOT NULL) AND (?1 = 0 OR preset = 1)",
             [preset_only],
             |row| row.get(0),
         )?;
@@ -621,7 +628,7 @@ impl Database {
                               LIMIT 1), 'remote_metadata') AS storage_kind,
                     (SELECT COUNT(*) FROM wallpaper_file_state AS state WHERE state.wallpaper_id = wallpaper.id) AS file_copy_count
              FROM wallpaper
-             WHERE blacklisted = 0 AND (?1 = 0 OR preset = 1)
+             WHERE blacklisted = 0 AND (thumbnail_failed = 0 OR local_path IS NOT NULL) AND (?1 = 0 OR preset = 1)
              ORDER BY preset DESC, synced_at DESC, id DESC
              LIMIT ?2 OFFSET ?3",
         )?;
@@ -652,6 +659,10 @@ impl Database {
             "wallpaper.blacklisted = 0".to_owned()
         }];
         let mut values = Vec::<Value>::new();
+        // The same predicate feeds the page and its count; offline originals remain manageable.
+        predicates.push(
+            "(wallpaper.thumbnail_failed = 0 OR wallpaper.local_path IS NOT NULL)".to_owned(),
+        );
 
         if let Some(keyword) = query
             .keyword
@@ -2419,8 +2430,17 @@ impl Database {
     /// Repairs a cache reference without changing favorites, rotation selection, or source metadata.
     pub fn set_thumbnail_path(&self, wallpaper_id: i64, path: &str) -> AppResult<()> {
         self.lock()?.execute(
-            "UPDATE wallpaper SET thumbnail_local_path = ?2 WHERE id = ?1 AND blacklisted = 0",
+            "UPDATE wallpaper SET thumbnail_local_path = ?2, thumbnail_failed = 0 WHERE id = ?1 AND blacklisted = 0",
             params![wallpaper_id, path],
+        )?;
+        Ok(())
+    }
+
+    /// Quarantines only the failing canonical source, not healthy deduplicated alternatives.
+    pub fn mark_thumbnail_failed(&self, provider: &str, remote_id: &str) -> AppResult<()> {
+        self.lock()?.execute(
+            "UPDATE wallpaper SET thumbnail_failed = 1 WHERE provider = ?1 AND remote_id = ?2",
+            params![provider, remote_id],
         )?;
         Ok(())
     }
@@ -2634,10 +2654,10 @@ mod tests {
         let directory = tempfile::tempdir()?;
         let path = directory.path().join("test.db");
         let first = Database::open(&path)?;
-        assert_eq!(first.schema_version()?, 12);
+        assert_eq!(first.schema_version()?, 13);
         drop(first);
         let second = Database::open(&path)?;
-        assert_eq!(second.schema_version()?, 12);
+        assert_eq!(second.schema_version()?, 13);
         Ok(())
     }
 
@@ -2690,7 +2710,7 @@ mod tests {
         drop(connection);
 
         let database = Database::open(&path)?;
-        assert_eq!(database.schema_version()?, 12);
+        assert_eq!(database.schema_version()?, 13);
         let upgraded = database.list_wallpapers(1, 10, false)?;
         assert_eq!(upgraded.total, 1);
         assert!(upgraded.items[0].favorite);
@@ -2829,6 +2849,44 @@ mod tests {
         assert_eq!(
             database.thumbnail_path(id)?.as_deref(),
             Some("cache/manual.webp")
+        );
+        Ok(())
+    }
+
+    /// Quarantine changes both pagination and visibility but never destroys saved user state.
+    #[test]
+    fn quarantined_thumbnail_is_filtered_and_recovers() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let database = Database::open(&directory.path().join("quarantine.db"))?;
+        let wallpaper = sample_wallpaper();
+        database.upsert_wallpapers(std::slice::from_ref(&wallpaper))?;
+        let id = database.list_wallpapers(1, 24, false)?.items[0].id;
+        database
+            .lock()?
+            .execute("UPDATE wallpaper SET favorite = 1 WHERE id = ?1", [id])?;
+        database.mark_thumbnail_failed(&wallpaper.provider, &wallpaper.remote_id)?;
+        assert_eq!(database.list_wallpapers(1, 24, false)?.total, 0);
+        let filtered = database.search_wallpapers(&CatalogQuery::default())?;
+        assert_eq!(filtered.total, 0);
+        assert!(filtered.items.is_empty());
+        assert!(database.get_wallpaper(id)?.favorite);
+        assert!(!database.get_wallpaper(id)?.blacklisted);
+        database.set_thumbnail_path(id, "cache/recovered.jpg")?;
+        assert_eq!(
+            database.search_wallpapers(&CatalogQuery::default())?.total,
+            1
+        );
+        database.mark_thumbnail_failed(&wallpaper.provider, &wallpaper.remote_id)?;
+        database.upsert_wallpapers(std::slice::from_ref(&wallpaper))?;
+        assert_eq!(database.list_wallpapers(1, 24, false)?.total, 1);
+        database.mark_thumbnail_failed(&wallpaper.provider, &wallpaper.remote_id)?;
+        database.lock()?.execute(
+            "UPDATE wallpaper SET local_path = 'user-owned.jpg' WHERE id = ?1",
+            [id],
+        )?;
+        assert_eq!(
+            database.search_wallpapers(&CatalogQuery::default())?.total,
+            1
         );
         Ok(())
     }

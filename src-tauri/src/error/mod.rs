@@ -13,6 +13,8 @@ pub enum AppError {
     FileSystem(String),
     #[error("image error: {0}")]
     Image(String),
+    #[error("thumbnail unavailable: {0}")]
+    ThumbnailUnavailable(String),
     #[error("provider error: {0}")]
     Provider(String),
     #[error("platform error: {0}")]
@@ -55,6 +57,7 @@ impl AppError {
             Self::Database(_) => "DATABASE",
             Self::FileSystem(_) => "FILE_SYSTEM",
             Self::Image(_) => "IMAGE",
+            Self::ThumbnailUnavailable(_) => "THUMBNAIL_UNAVAILABLE",
             Self::Provider(_) => "PROVIDER",
             Self::Platform(_) => "PLATFORM",
             Self::Wallpaper(_) => "WALLPAPER",

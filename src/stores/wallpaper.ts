@@ -273,7 +273,18 @@ export const useWallpaperStore = defineStore("wallpaper", () => {
 
   /** Repairs one thumbnail without downloading its original or reloading the catalog page. */
   async function repairThumbnail(wallpaperId: number): Promise<void> {
-    const data = await refreshWallpaperThumbnail(wallpaperId);
+    const data = await refreshWallpaperThumbnail(wallpaperId).catch((cause: unknown) => {
+      if (typeof cause === "object" && cause !== null && "code" in cause && cause.code === "THUMBNAIL_UNAVAILABLE") {
+        // Hide confirmed bad remote records immediately, without changing favorites or rotation.
+        const visible = wallpapers.value.some((wallpaper) => wallpaper.id === wallpaperId);
+        wallpapers.value = wallpapers.value.filter((wallpaper) => wallpaper.id !== wallpaperId);
+        if (visible) total.value = Math.max(0, total.value - 1);
+        if (visible && wallpapers.value.length === 0 && total.value > 0) {
+          void goToPage(page.value);
+        }
+      }
+      throw cause;
+    });
     // Navigation may finish before a slow provider; never retain an off-page Blob URL.
     if (!wallpapers.value.some((wallpaper) => wallpaper.id === wallpaperId)) return;
     const oldUrl = thumbnailUrls.value[wallpaperId];
