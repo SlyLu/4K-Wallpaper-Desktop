@@ -106,7 +106,14 @@ impl From<serde_json::Error> for AppError {
 impl From<reqwest::Error> for AppError {
     /// Keeps provider transport failures recoverable and distinct from parsing failures.
     fn from(error: reqwest::Error) -> Self {
-        Self::Network(error.to_string())
+        if let Some(status) = error.status() {
+            Self::Provider(format!(
+                "remote server returned HTTP {}: {error}",
+                status.as_u16()
+            ))
+        } else {
+            Self::Network(error.to_string())
+        }
     }
 }
 

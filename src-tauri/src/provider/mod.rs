@@ -130,6 +130,7 @@ pub trait WallpaperProvider: Send + Sync {
 /// Runtime registry routes provider names without leaking concrete adapters into commands.
 #[derive(Clone)]
 pub struct ProviderServices {
+    download_directory: PathBuf,
     wallhaven: Arc<dyn WallpaperProvider>,
     wikimedia: Arc<dyn WallpaperProvider>,
     openverse: Arc<dyn WallpaperProvider>,
@@ -142,6 +143,7 @@ impl ProviderServices {
     /// Initializes both V1 adapters; local roots remain empty until the user selects folders.
     pub fn new(paths: &AppPaths) -> AppResult<Self> {
         Ok(Self {
+            download_directory: paths.wallpapers_original_dir.clone(),
             wallhaven: Arc::new(WallhavenProvider::new(
                 paths.wallpapers_original_dir.clone(),
             )?),
@@ -173,6 +175,31 @@ impl ProviderServices {
             _ => Err(AppError::Provider(format!(
                 "unsupported wallpaper provider: {provider}"
             ))),
+        }
+    }
+
+    /// Rebuilds an online adapter so downloads observe the latest operating-system proxy state.
+    pub fn fresh(&self, provider: &str) -> AppResult<Arc<dyn WallpaperProvider>> {
+        match provider {
+            "wallhaven" => Ok(Arc::new(WallhavenProvider::new(
+                self.download_directory.clone(),
+            )?)),
+            "wikimedia_commons" => Ok(Arc::new(WikimediaCommonsProvider::new(
+                self.download_directory.clone(),
+            )?)),
+            "openverse" => Ok(Arc::new(OpenverseProvider::new(
+                self.download_directory.clone(),
+            )?)),
+            "art_institute_chicago" => Ok(Arc::new(ArtInstituteChicagoProvider::new(
+                self.download_directory.clone(),
+            )?)),
+            "thegamesdb" => {
+                let fresh = TheGamesDbProvider::new(self.download_directory.clone())?;
+                fresh.set_api_key(self.thegamesdb.configured_api_key()?.as_deref())?;
+                Ok(Arc::new(fresh))
+            }
+            "local" => self.get(provider),
+            _ => self.get(provider),
         }
     }
 

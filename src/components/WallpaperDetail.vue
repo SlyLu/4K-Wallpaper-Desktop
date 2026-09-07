@@ -7,6 +7,7 @@ import type { FitMode } from "../models/image";
 import type { WallpaperProviderSource } from "../models/provider";
 import { useMonitorStore } from "../stores/monitor";
 import { useWallpaperStore } from "../stores/wallpaper";
+import { errorMessage } from "../utils/error";
 
 const wallpaperStore = useWallpaperStore();
 const monitorStore = useMonitorStore();
@@ -43,7 +44,7 @@ watch(
       const blob = new Blob([result.bytes], { type: result.wallpaper.mimeType ?? "image/jpeg" });
       originalUrl.value = URL.createObjectURL(blob);
     } catch (cause) {
-      error.value = String(cause);
+      error.value = errorMessage(cause);
     } finally {
       loading.value = false;
     }
@@ -60,7 +61,7 @@ async function apply(): Promise<void> {
     await wallpaperStore.apply(wallpaper.id, monitorId.value, fitMode.value);
     success.value = "壁纸已应用到选中显示器";
   } catch (cause) {
-    error.value = String(cause);
+    error.value = errorMessage(cause);
   } finally {
     loading.value = false;
   }
@@ -77,7 +78,7 @@ async function applySpan(mode: "fill" | "fit_to_span"): Promise<void> {
     wallpaperStore.activeWallpaper = result.wallpaper;
     success.value = `已生成 ${result.slices.length} 个连续切片（布局 ${result.layout.layoutHash}）`;
   } catch (cause) {
-    error.value = String(cause);
+    error.value = errorMessage(cause);
   } finally {
     loading.value = false;
   }
@@ -89,7 +90,7 @@ async function disableSpan(): Promise<void> {
     const restored = await disableSpanningWallpaper();
     success.value = restored ? `已恢复 ${restored} 块显示器的独立壁纸` : "当前未启用跨屏模式";
   } catch (cause) {
-    error.value = String(cause);
+    error.value = errorMessage(cause);
   }
 }
 
@@ -103,7 +104,7 @@ async function deleteCache(): Promise<void> {
     requestedWallpaperId.value = undefined;
     success.value = "本地原图缓存已删除";
   } catch (cause) {
-    error.value = String(cause);
+    error.value = errorMessage(cause);
   }
 }
 

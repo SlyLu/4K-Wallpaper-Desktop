@@ -50,6 +50,14 @@ impl TheGamesDbProvider {
         Ok(())
     }
 
+    /// Copies the user-owned credential only for rebuilding a current proxy-aware adapter.
+    pub(crate) fn configured_api_key(&self) -> AppResult<Option<String>> {
+        self.api_key
+            .read()
+            .map(|value| value.clone())
+            .map_err(|_| AppError::Configuration("TheGamesDB API key lock was poisoned".into()))
+    }
+
     /// Returns a short-lived key copy so no lock is held across network awaits.
     fn api_key(&self) -> AppResult<String> {
         self.api_key

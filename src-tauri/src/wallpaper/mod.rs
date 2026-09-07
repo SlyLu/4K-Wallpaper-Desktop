@@ -55,8 +55,9 @@ impl<'a> WallpaperService<'a> {
         }
 
         let remote = record_to_remote(&wallpaper);
-        let provider = self.providers.get(&wallpaper.provider)?;
-        let downloaded = provider.download(&remote).await?;
+        let downloaded = self
+            .download_with_current_network(&wallpaper.provider, &remote)
+            .await?;
         let metadata = self.inspect_on_worker(downloaded.clone()).await?;
         let retained_path = if let Some(existing) = self
             .database
@@ -71,6 +72,27 @@ impl<'a> WallpaperService<'a> {
         };
         self.database
             .mark_wallpaper_downloaded(wallpaper_id, &retained_path, &metadata)
+    }
+
+    /// Retries only transport failures with another freshly resolved system-proxy client.
+    async fn download_with_current_network(
+        &self,
+        provider_name: &str,
+        wallpaper: &RemoteWallpaper,
+    ) -> AppResult<PathBuf> {
+        let provider = self.providers.fresh(provider_name)?;
+        match provider.download(wallpaper).await {
+            Ok(path) => Ok(path),
+            Err(first_error @ AppError::Network(_)) => {
+                tracing::warn!(provider = provider_name, error = %first_error, "original download transport failed; retrying with refreshed system proxy");
+                tokio::time::sleep(std::time::Duration::from_millis(350)).await;
+                self.providers
+                    .fresh(provider_name)?
+                    .download(wallpaper)
+                    .await
+            }
+            Err(error) => Err(error),
+        }
     }
 
     /// Processes and applies one catalog item to a concrete active monitor.
