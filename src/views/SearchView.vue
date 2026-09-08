@@ -10,9 +10,25 @@ const wallpaperStore = useWallpaperStore();
 const filters = reactive({ keyword: "", category: "all", resolution: "0", provider: "all", favorite: "all" });
 const onlineMessage = ref("");
 const searching = ref(false);
+const filtersExpanded = ref(false);
 const canSearchOnline = computed(
   () => filters.provider !== "local" && filters.category !== "local" && filters.favorite !== "yes",
 );
+const activeFilterCount = computed(() => [
+  filters.category !== "all",
+  filters.resolution !== "0",
+  filters.provider !== "all",
+  filters.favorite !== "all",
+].filter(Boolean).length);
+
+/** Resets only advanced constraints so the user's current keyword remains available. */
+function resetAdvancedFilters(): void {
+  filters.category = "all";
+  filters.resolution = "0";
+  filters.provider = "all";
+  filters.favorite = "all";
+  void search();
+}
 
 /** Builds the local metadata filters once so fallback results use identical constraints. */
 function catalogQuery(): CatalogQuery {
@@ -90,12 +106,49 @@ onMounted(() => void search());
 <template>
   <header class="page-header"><div><p class="eyebrow">METADATA SEARCH</p><h1>搜索壁纸</h1><p>优先搜索本地元数据，没有结果时自动从在线资源库拉取。</p></div></header>
   <form class="search-panel" @submit.prevent="search">
-    <input v-model="filters.keyword" autofocus placeholder="搜索 mountain、雪山、sunset、anime…" />
-    <select v-model="filters.category"><option value="all">全部分类</option><option value="nature">自然</option><option value="anime">动漫</option><option value="games">游戏</option><option value="people">人物</option><option value="local">本地</option></select>
-    <select v-model="filters.resolution"><option value="0">全部分辨率</option><option value="3840">≥ 4K</option><option value="5120">≥ 5K</option><option value="7680">≥ 8K</option></select>
-    <select v-model="filters.provider"><option value="all">全部来源</option><option value="wallhaven">Wallhaven</option><option value="wikimedia_commons">Wikimedia Commons</option><option value="openverse">Openverse</option><option value="art_institute_chicago">Art Institute of Chicago</option><option value="thegamesdb">TheGamesDB</option><option value="local">本地图库</option></select>
-    <select v-model="filters.favorite"><option value="all">全部收藏状态</option><option value="yes">仅收藏</option><option value="no">未收藏</option></select>
-    <button type="submit" :disabled="searching">{{ searching ? "搜索中…" : "搜索" }}</button><button type="button" class="secondary" :disabled="searching || !canSearchOnline" @click="searchOnline">联网搜索</button>
+    <div class="search-primary-row">
+      <label class="search-keyword-field">
+        <span class="visually-hidden">关键词</span>
+        <input v-model="filters.keyword" autofocus placeholder="例如：mountain、雪山、sunset、anime" />
+      </label>
+      <button type="submit" :disabled="searching">{{ searching ? "搜索中…" : "搜索" }}</button>
+      <button type="button" class="secondary" :disabled="searching || !canSearchOnline" @click="searchOnline">直接联网</button>
+      <button
+        type="button"
+        class="secondary search-filter-toggle"
+        :class="{ active: filtersExpanded || activeFilterCount > 0 }"
+        :aria-expanded="filtersExpanded"
+        aria-controls="advanced-search-filters"
+        @click="filtersExpanded = !filtersExpanded"
+      >
+        {{ filtersExpanded ? "收起筛选" : activeFilterCount ? `筛选 · ${activeFilterCount}` : "筛选" }}
+      </button>
+    </div>
+    <div v-show="filtersExpanded" id="advanced-search-filters" class="search-advanced">
+      <div class="search-advanced-heading">
+        <div><strong>筛选条件</strong><span>进一步缩小当前关键词的搜索范围</span></div>
+        <button type="button" class="text-button" :disabled="searching || activeFilterCount === 0" @click="resetAdvancedFilters">重置筛选</button>
+      </div>
+      <div class="search-filter-grid">
+        <label class="search-field">
+          <span>分类</span>
+          <select v-model="filters.category"><option value="all">全部分类</option><option value="nature">自然</option><option value="anime">动漫</option><option value="games">游戏</option><option value="people">人物</option><option value="local">本地</option></select>
+        </label>
+        <label class="search-field">
+          <span>最低分辨率</span>
+          <select v-model="filters.resolution"><option value="0">不限分辨率</option><option value="3840">≥ 4K</option><option value="5120">≥ 5K</option><option value="7680">≥ 8K</option></select>
+        </label>
+        <label class="search-field">
+          <span>资源来源</span>
+          <select v-model="filters.provider"><option value="all">全部来源</option><option value="wallhaven">Wallhaven</option><option value="wikimedia_commons">Wikimedia Commons</option><option value="openverse">Openverse</option><option value="art_institute_chicago">Art Institute of Chicago</option><option value="thegamesdb">TheGamesDB</option><option value="local">本地图库</option></select>
+        </label>
+        <label class="search-field">
+          <span>收藏状态</span>
+          <select v-model="filters.favorite"><option value="all">全部壁纸</option><option value="yes">仅收藏</option><option value="no">未收藏</option></select>
+        </label>
+      </div>
+      <p class="search-filter-hint">“搜索”优先使用本地索引，无结果时自动联网；“直接联网”会强制刷新在线结果。</p>
+    </div>
   </form>
   <p v-if="onlineMessage" class="inline-status">{{ onlineMessage }}</p>
   <div class="section-title"><h2>搜索结果</h2><p>{{ wallpaperStore.total }} 张</p></div>

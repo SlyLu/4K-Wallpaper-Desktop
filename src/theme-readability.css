@@ -24,6 +24,7 @@
 :root[data-has-background="true"] .display-card,
 :root[data-has-background="true"] .category-strip button,
 :root[data-has-background="true"] .category-link,
+:root[data-has-background="true"] .gallery-toolbar,
 :root[data-has-background="true"] .drop-zone,
 :root[data-has-background="true"] .feed-tabs,
 :root[data-has-background="true"] .mode-switch,
@@ -67,6 +68,8 @@
   :root[data-has-background="true"] .discover-hero,
   :root[data-has-background="true"] .settings-card,
   :root[data-has-background="true"] .search-panel,
+  :root[data-has-background="true"] .gallery-toolbar,
+  :root[data-has-background="true"] .drop-zone,
   :root[data-has-background="true"] .rotation-panel {
     background-color: var(--color-surface);
     backdrop-filter: none;

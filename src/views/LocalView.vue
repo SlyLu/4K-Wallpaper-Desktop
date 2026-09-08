@@ -129,22 +129,40 @@ onBeforeUnmount(() => unlistenDragDrop?.());
   </header>
 
   <section class="gallery-toolbar">
-    <div class="feed-tabs" aria-label="图库来源">
-      <button :class="{ active: source === 'all' }" @click="source = 'all'; loadGallery()">全部图库</button>
-      <button :class="{ active: source === 'local' }" @click="source = 'local'; loadGallery()">本地导入</button>
-      <button :class="{ active: source === 'online' }" @click="source = 'online'; loadGallery()">在线下载</button>
+    <div class="gallery-toolbar-heading">
+      <div class="gallery-toolbar-copy">
+        <strong>筛选图库</strong>
+        <span>按来源和文件信息缩小范围</span>
+      </div>
+      <div class="feed-tabs" aria-label="图库来源">
+        <button :class="{ active: source === 'all' }" @click="source = 'all'; loadGallery()">全部图库</button>
+        <button :class="{ active: source === 'local' }" @click="source = 'local'; loadGallery()">本地导入</button>
+        <button :class="{ active: source === 'online' }" @click="source = 'online'; loadGallery()">在线下载</button>
+      </div>
     </div>
     <form class="gallery-filters" @submit.prevent="loadGallery">
-      <input v-model="nameFilter" placeholder="按图片名称筛选" />
-      <select v-model="category"><option value="all">全部分类</option><option value="nature">自然</option><option value="anime">动漫</option><option value="people">人物</option></select>
-      <select v-model="availability"><option value="all">全部文件状态</option><option value="available">本机可用</option><option value="temporarily_unavailable">暂不可用</option><option value="missing">已缺失</option></select>
-      <button type="submit" class="secondary">筛选</button>
+      <label class="gallery-filter-field gallery-name-filter">
+        <span>图片名称</span>
+        <input v-model="nameFilter" placeholder="输入图片名称" />
+      </label>
+      <label class="gallery-filter-field">
+        <span>分类</span>
+        <select v-model="category"><option value="all">全部分类</option><option value="nature">自然</option><option value="anime">动漫</option><option value="people">人物</option></select>
+      </label>
+      <label class="gallery-filter-field">
+        <span>文件状态</span>
+        <select v-model="availability"><option value="all">全部文件状态</option><option value="available">本机可用</option><option value="temporarily_unavailable">暂不可用</option><option value="missing">已缺失</option></select>
+      </label>
+      <button type="submit" class="secondary gallery-filter-submit">应用筛选</button>
     </form>
   </section>
 
   <div class="drop-zone" :class="{ active: dragActive }">
-    <strong>{{ dragActive ? "松开即可导入" : "拖入图片或文件夹" }}</strong>
-    <span>支持 JPG、JPEG、PNG、WebP；导入只建立索引，不移动原文件。</span>
+    <span class="drop-zone-icon" aria-hidden="true">＋</span>
+    <div class="drop-zone-copy">
+      <strong>{{ dragActive ? "松开即可导入" : "拖入图片或文件夹" }}</strong>
+      <span>支持 JPG、JPEG、PNG、WebP；导入只建立索引，不移动原文件。</span>
+    </div>
   </div>
   <div v-if="settingsStore.settings?.localDirectories.length" class="directory-chips"><span v-for="path in settingsStore.settings.localDirectories" :key="path">{{ path }}</span></div>
   <p v-if="operationMessage" class="inline-status">{{ operationMessage }}</p>
