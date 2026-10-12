@@ -1,6 +1,6 @@
 [package]
 name = "wallpaper-desktop"
-version = "0.2.8"
+version = "0.2.9"
 description = "Local-first 4K wallpaper desktop application"
 authors = ["4K Wallpaper Desktop contributors"]
 edition = "2024"
@@ -31,6 +31,7 @@ sha2 = "0.10.9"
 tauri = { version = "2.11.5", features = ["tray-icon"] }
 tauri-plugin-autostart = "2"
 tauri-plugin-dialog = "2"
+tauri-plugin-single-instance = "2"
 thiserror = "2.0.20"
 tokio = { version = "1.48.0", features = ["fs", "io-util", "macros", "sync", "rt", "time"] }
 tracing = "0.1.44"

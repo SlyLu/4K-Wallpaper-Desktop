@@ -99,6 +99,13 @@ pub fn run() -> AppResult<()> {
     let launch_args = std::env::args_os().collect::<Vec<_>>();
     let background_launch = is_background_launch(&launch_args);
     let app = tauri::Builder::default()
+        // Register first so duplicate launches are forwarded before other plugins initialize.
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            // Auto-start should stay in the tray even if the OS launches it again.
+            if !is_background_launch(&args.iter().map(std::ffi::OsString::from).collect::<Vec<_>>()) {
+                desktop::show_main_window(app);
+            }
+        }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
