@@ -1780,6 +1780,11 @@ impl Database {
                 "DELETE FROM rotation_selection WHERE wallpaper_id = ?1",
                 [wallpaper_id],
             )?;
+            // Keep monitor-specific snapshots aligned with the global card toggle.
+            transaction.execute(
+                "DELETE FROM rotation_wallpaper WHERE wallpaper_id = ?1",
+                [wallpaper_id],
+            )?;
         }
         // A changed global source must not continue consuming a queue built from stale choices.
         transaction.execute("DELETE FROM rotation_queue", [])?;
