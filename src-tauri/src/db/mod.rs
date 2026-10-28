@@ -1986,7 +1986,7 @@ impl Database {
         Ok(())
     }
 
-    /// Selects from the explicit pool, or falls back to five recent valid local originals.
+    /// Selects only from a monitor-specific pool or the user's explicit global selections.
     pub fn next_rotation_wallpaper(&self, system_monitor_id: &str) -> AppResult<WallpaperRecord> {
         let connection = self.lock()?;
         let schedule = connection
@@ -2076,47 +2076,8 @@ impl Database {
             });
         }
 
-        let order = if matches!(schedule.0.as_str(), "shuffle" | "weighted_random") {
-            "CASE WHEN recent.used_at = (SELECT MAX(used_at) FROM recent) THEN 1 ELSE 0 END,
-             RANDOM()"
-        } else {
-            "recent.used_at ASC, wallpaper.id ASC"
-        };
-        let sql = format!(
-            "WITH recent AS (
-                SELECT history.wallpaper_id, MAX(history.used_at) AS used_at
-                FROM wallpaper_history AS history
-                JOIN monitor ON monitor.id = history.monitor_id
-                JOIN wallpaper ON wallpaper.id = history.wallpaper_id
-                WHERE monitor.system_monitor_id = ?1
-                  AND wallpaper.blacklisted = 0
-                  AND wallpaper.local_path IS NOT NULL
-                  AND wallpaper.download_status = 'downloaded'
-                GROUP BY history.wallpaper_id
-                ORDER BY used_at DESC
-                LIMIT 5
-             )
-             SELECT wallpaper.id FROM recent
-             JOIN wallpaper ON wallpaper.id = recent.wallpaper_id
-             ORDER BY {order}"
-        );
-        let candidate_ids = {
-            let mut statement = connection.prepare(&sql)?;
-            let rows = statement.query_map([system_monitor_id], |row| row.get::<_, i64>(0))?;
-            rows.collect::<Result<Vec<_>, _>>()?
-        };
-        for wallpaper_id in candidate_ids {
-            if let Some(wallpaper) = load_wallpaper(&connection, wallpaper_id)?
-                && wallpaper
-                    .local_path
-                    .as_deref()
-                    .is_some_and(|path| Path::new(path).is_file())
-            {
-                return Ok(wallpaper);
-            }
-        }
         Err(AppError::Wallpaper(
-            "no usable wallpaper in the five most recent assignments".into(),
+            "rotation pool is empty; select wallpapers or collections before enabling rotation".into(),
         ))
     }
 

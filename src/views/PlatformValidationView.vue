@@ -112,6 +112,10 @@ async function configureRotation(): Promise<void> {
     rotationMessage.value = "请先选择显示器";
     return;
   }
+  if (!selectedIds.value.length) {
+    rotationMessage.value = "请先加入至少一张轮换壁纸";
+    return;
+  }
   try {
     await schedulerStore.configure(
       selectedMonitorId.value,
@@ -120,9 +124,7 @@ async function configureRotation(): Promise<void> {
       rotationFitMode.value,
       rotationSelectionMode.value,
     );
-    rotationMessage.value = selectedIds.value.length
-      ? `已为选中显示器启用 ${selectedIds.value.length} 张指定壁纸轮换`
-      : "已启用最近 5 张有效壁纸轮换";
+    rotationMessage.value = `已为选中显示器启用 ${selectedIds.value.length} 张指定壁纸轮换`;
   } catch {
     rotationMessage.value = schedulerError.value;
   }
@@ -240,8 +242,8 @@ onBeforeUnmount(closeDetail);
           <option value="stretch">Stretch</option>
         </select>
       </div>
-      <button :disabled="schedulerPending" @click="configureRotation">
-        {{ selectedCount ? "将已选资源设为动态切换壁纸" : "使用最近 5 张壁纸自动切换" }}
+      <button :disabled="schedulerPending || !selectedCount" @click="configureRotation">
+        {{ selectedCount ? "将已选资源设为动态切换壁纸" : "请先加入轮换壁纸" }}
       </button>
       <template v-if="selectedSchedule">
         <button
