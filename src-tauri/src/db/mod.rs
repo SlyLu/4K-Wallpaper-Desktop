@@ -76,6 +76,8 @@ pub struct Database {
     connection: Arc<Mutex<Connection>>,
 }
 
+const EMPTY_ROTATION_POOL_PAUSE_REASON: &str = "轮换池为空，已自动暂停";
+
 impl Database {
     /// Opens SQLite, enables integrity pragmas, and applies ordered embedded migrations.
     pub fn open(path: &Path) -> AppResult<Self> {
@@ -1788,6 +1790,39 @@ impl Database {
         }
         // A changed global source must not continue consuming a queue built from stale choices.
         transaction.execute("DELETE FROM rotation_queue", [])?;
+        if selected {
+            // Only undo pauses created by an empty pool; preserve user-requested pauses.
+            transaction.execute(
+                "UPDATE monitor_schedule SET
+                    paused = 0,
+                    last_error = NULL,
+                    next_change_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                 WHERE paused = 1 AND last_error = ?1",
+                [EMPTY_ROTATION_POOL_PAUSE_REASON],
+            )?;
+        } else {
+            // Stop monitors whose explicit and materialized pools are both empty.
+            transaction.execute(
+                "UPDATE monitor_schedule AS schedule SET
+                    paused = 1,
+                    last_error = ?1,
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                 WHERE schedule.enabled = 1 AND schedule.paused = 0
+                   AND NOT EXISTS (
+                       SELECT 1 FROM rotation_wallpaper AS candidate
+                       JOIN wallpaper ON wallpaper.id = candidate.wallpaper_id
+                       WHERE candidate.system_monitor_id = schedule.system_monitor_id
+                         AND wallpaper.blacklisted = 0
+                   )
+                   AND NOT EXISTS (
+                       SELECT 1 FROM rotation_selection AS selection
+                       JOIN wallpaper ON wallpaper.id = selection.wallpaper_id
+                       WHERE wallpaper.blacklisted = 0
+                   )",
+                [EMPTY_ROTATION_POOL_PAUSE_REASON],
+            )?;
+        }
         transaction.commit()?;
         drop(connection);
         self.rotation_selection_ids()
@@ -3187,12 +3222,14 @@ mod tests {
         );
         reopened.set_wallpaper_blacklisted(selected_id, true)?;
         assert!(reopened.rotation_selection_ids()?.is_empty());
-        assert_eq!(reopened.next_rotation_wallpaper("DISPLAY-1")?.id, recent_id);
+        assert!(reopened
+            .next_rotation_wallpaper("DISPLAY-1")
+            .is_err());
         Ok(())
     }
 
     #[test]
-    fn empty_pool_uses_recent_valid_files_and_excludes_blacklisted_or_deleted_items()
+    fn empty_pool_never_falls_back_to_recent_valid_files()
     -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempfile::tempdir()?;
         let database = Database::open(&directory.path().join("test.db"))?;
@@ -3238,10 +3275,43 @@ mod tests {
         let schedule = database.configure_rotation("DISPLAY-1", &[], 600, "fill", "round_robin")?;
 
         assert_eq!(schedule.wallpaper_count, 0);
+        assert!(database.next_rotation_wallpaper("DISPLAY-1").is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn deselecting_last_wallpaper_auto_pauses_and_reselecting_resumes_schedule()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let database = Database::open(&directory.path().join("test.db"))?;
+        database.upsert_monitors(&[MonitorInfo {
+            system_monitor_id: "DISPLAY-1".into(),
+            name: "Test Display".into(),
+            width: 1920,
+            height: 1080,
+            position_x: 0,
+            position_y: 0,
+            primary: true,
+        }])?;
+        let wallpaper = sample_wallpaper();
+        database.upsert_wallpapers(std::slice::from_ref(&wallpaper))?;
+        let wallpaper_id = database.list_wallpapers(1, 10, false)?.items[0].id;
+        database.configure_rotation("DISPLAY-1", &[wallpaper_id], 600, "fill", "round_robin")?;
+
+        database.set_rotation_selection(wallpaper_id, false)?;
+        let paused = database.schedule_for_monitor("DISPLAY-1")?.ok_or("schedule missing")?;
+        assert!(paused.paused);
         assert_eq!(
-            database.next_rotation_wallpaper("DISPLAY-1")?.remote_id,
-            "valid"
+            paused.last_error.as_deref(),
+            Some(super::EMPTY_ROTATION_POOL_PAUSE_REASON)
         );
+        assert!(database.due_schedules()?.is_empty());
+
+        database.set_rotation_selection(wallpaper_id, true)?;
+        let resumed = database.schedule_for_monitor("DISPLAY-1")?.ok_or("schedule missing")?;
+        assert!(!resumed.paused);
+        assert!(resumed.last_error.is_none());
+        assert_eq!(database.next_rotation_wallpaper("DISPLAY-1")?.id, wallpaper_id);
         Ok(())
     }
 

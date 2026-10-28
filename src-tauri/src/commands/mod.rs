@@ -513,9 +513,11 @@ pub fn set_rotation_selection(
     selected: bool,
     state: State<'_, AppState>,
 ) -> AppResult<Vec<i64>> {
-    state
+    let selection = state
         .database
-        .set_rotation_selection(wallpaper_id, selected)
+        .set_rotation_selection(wallpaper_id, selected)?;
+    state.scheduler.wake();
+    Ok(selection)
 }
 
 /// Returns validated persisted rules so monitor forms never reset on navigation.
