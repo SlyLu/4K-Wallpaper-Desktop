@@ -1,4 +1,5 @@
 import type { FitMode } from "./image";
+import type { WallpaperRecord } from "./wallpaper";
 
 export type RotationSelectionMode = "round_robin" | "random";
 export type RotationStrategy = "round_robin" | "shuffle" | "least_recent" | "weighted_random";
@@ -33,4 +34,6 @@ export interface RotationExplanation {
   sourceCollectionIds: number[];
   candidateCount: number;
   queuedCount: number;
+  candidates: WallpaperRecord[];
+  queuedWallpapers: WallpaperRecord[];
 }

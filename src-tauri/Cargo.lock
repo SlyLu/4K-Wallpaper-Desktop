@@ -4775,7 +4775,7 @@ dependencies = [
 
 [[package]]
 name = "wallpaper-desktop"
-version = "0.2.12"
+version = "0.2.14"
 dependencies = [
  "async-trait",
  "directories",

@@ -86,6 +86,7 @@ impl Database {
             "PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;",
         )?;
         apply_migrations(&mut connection)?;
+        reconcile_rotation_pools(&mut connection)?;
         tracing::info!(database = %path.display(), "database initialized");
         Ok(Self {
             connection: Arc::new(Mutex::new(connection)),
@@ -1881,7 +1882,7 @@ impl Database {
         system_monitor_id: &str,
     ) -> AppResult<crate::models::RotationExplanation> {
         let connection = self.lock()?;
-        connection
+        let mut explanation = connection
             .query_row(
                 "SELECT policy.system_monitor_id, policy.strategy, policy.last_reason,
                         (SELECT COUNT(*) FROM monitor_rotation_source AS source
@@ -1927,10 +1928,72 @@ impl Database {
                         queued_count: u32::try_from(queued_count).map_err(|_| {
                             rusqlite::Error::IntegralValueOutOfRange(6, queued_count)
                         })?,
+                        candidates: Vec::new(),
+                        queued_wallpapers: Vec::new(),
                     })
                 },
             )
-            .map_err(AppError::from)
+            .map_err(AppError::from)?;
+
+        // Report the exact effective pool and unconsumed current shuffle generation.
+        let candidate_ids = {
+            let mut statement = connection.prepare(
+                "SELECT wallpaper.id FROM wallpaper
+                 WHERE wallpaper.blacklisted = 0 AND (
+                    EXISTS (SELECT 1 FROM rotation_wallpaper AS rotation
+                            WHERE rotation.system_monitor_id = ?1
+                              AND rotation.wallpaper_id = wallpaper.id)
+                    OR (NOT EXISTS (SELECT 1 FROM rotation_wallpaper AS rotation
+                                    WHERE rotation.system_monitor_id = ?1)
+                        AND EXISTS (SELECT 1 FROM rotation_selection AS selection
+                                    WHERE selection.wallpaper_id = wallpaper.id))
+                 ) ORDER BY wallpaper.id",
+            )?;
+            statement.query_map([system_monitor_id], |row| row.get::<_, i64>(0))?
+                .collect::<Result<Vec<_>, _>>()?
+        };
+        explanation.candidates = candidate_ids
+            .into_iter()
+            .map(|id| load_wallpaper(&connection, id))
+            .collect::<AppResult<Vec<_>>>()?
+            .into_iter()
+            .flatten()
+            .collect();
+
+        let queue_ids = {
+            let mut statement = connection.prepare(
+                "SELECT queue.wallpaper_id FROM rotation_queue AS queue
+                 JOIN wallpaper ON wallpaper.id = queue.wallpaper_id
+                 WHERE queue.system_monitor_id = ?1 AND queue.consumed_at IS NULL
+                   AND wallpaper.blacklisted = 0
+                   AND (
+                     EXISTS (SELECT 1 FROM rotation_wallpaper AS active
+                             WHERE active.system_monitor_id = ?1
+                               AND active.wallpaper_id = queue.wallpaper_id)
+                     OR (NOT EXISTS (SELECT 1 FROM rotation_wallpaper AS active
+                                     WHERE active.system_monitor_id = ?1)
+                         AND EXISTS (SELECT 1 FROM rotation_selection AS selected
+                                     WHERE selected.wallpaper_id = queue.wallpaper_id))
+                   )
+                   AND queue.generation = (SELECT COALESCE(MAX(generation), 0)
+                                           FROM rotation_queue WHERE system_monitor_id = ?1)
+                 ORDER BY queue.position",
+            )?;
+            statement.query_map([system_monitor_id], |row| row.get::<_, i64>(0))?
+                .collect::<Result<Vec<_>, _>>()?
+        };
+        explanation.queued_wallpapers = queue_ids
+            .into_iter()
+            .map(|id| load_wallpaper(&connection, id))
+            .collect::<AppResult<Vec<_>>>()?
+            .into_iter()
+            .flatten()
+            .collect();
+        explanation.candidate_count = u32::try_from(explanation.candidates.len())
+            .map_err(|_| AppError::Database("rotation candidate count exceeds u32".into()))?;
+        explanation.queued_count = u32::try_from(explanation.queued_wallpapers.len())
+            .map_err(|_| AppError::Database("rotation queue count exceeds u32".into()))?;
+        Ok(explanation)
     }
 
     /// Lists persisted scheduler state for UI and restart recovery diagnostics.
@@ -2465,6 +2528,64 @@ impl Database {
             .lock()
             .map_err(|_| AppError::Database("database mutex was poisoned".into()))
     }
+}
+
+/// Removes pre-upgrade pool entries that no longer match explicit global selections.
+fn reconcile_rotation_pools(connection: &mut Connection) -> AppResult<()> {
+    let transaction = connection.transaction()?;
+    transaction.execute(
+        "DELETE FROM rotation_wallpaper
+         WHERE NOT EXISTS (
+             SELECT 1 FROM monitor_rotation_source AS source
+             WHERE source.system_monitor_id = rotation_wallpaper.system_monitor_id
+               AND source.enabled = 1
+         )
+           AND NOT EXISTS (
+             SELECT 1 FROM rotation_selection AS selection
+             JOIN wallpaper ON wallpaper.id = selection.wallpaper_id
+             WHERE selection.wallpaper_id = rotation_wallpaper.wallpaper_id
+               AND wallpaper.blacklisted = 0
+         )",
+        [],
+    )?;
+    transaction.execute(
+        "DELETE FROM rotation_queue
+         WHERE NOT EXISTS (
+             SELECT 1 FROM rotation_wallpaper AS pool
+             WHERE pool.system_monitor_id = rotation_queue.system_monitor_id
+               AND pool.wallpaper_id = rotation_queue.wallpaper_id
+         )
+           AND NOT EXISTS (
+             SELECT 1 FROM monitor_rotation_source AS source
+             WHERE source.system_monitor_id = rotation_queue.system_monitor_id
+               AND source.enabled = 1
+         )
+           AND NOT EXISTS (
+             SELECT 1 FROM rotation_selection AS selection
+             WHERE selection.wallpaper_id = rotation_queue.wallpaper_id
+         )",
+        [],
+    )?;
+    transaction.execute(
+        "UPDATE monitor_schedule AS schedule SET
+            paused = 1,
+            last_error = ?1,
+            updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+         WHERE schedule.enabled = 1 AND schedule.paused = 0
+           AND NOT EXISTS (
+             SELECT 1 FROM monitor_rotation_source AS source
+             WHERE source.system_monitor_id = schedule.system_monitor_id
+               AND source.enabled = 1
+           )
+           AND NOT EXISTS (
+             SELECT 1 FROM rotation_selection AS selection
+             JOIN wallpaper ON wallpaper.id = selection.wallpaper_id
+             WHERE wallpaper.blacklisted = 0
+           )",
+        [EMPTY_ROTATION_POOL_PAUSE_REASON],
+    )?;
+    transaction.commit()?;
+    Ok(())
 }
 
 /// Converts a catalog row without performing any follow-up queries.
@@ -3312,6 +3433,45 @@ mod tests {
         assert!(!resumed.paused);
         assert!(resumed.last_error.is_none());
         assert_eq!(database.next_rotation_wallpaper("DISPLAY-1")?.id, wallpaper_id);
+        Ok(())
+    }
+
+    #[test]
+    fn startup_reconciliation_removes_legacy_unselected_monitor_pool_entries()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("test.db");
+        let database = Database::open(&path)?;
+        let selected = sample_wallpaper();
+        let mut stale = sample_wallpaper();
+        stale.remote_id = "stale-unselected".into();
+        stale.original_url = Some("https://example.test/stale.jpg".into());
+        database.upsert_wallpapers(&[selected, stale])?;
+        let records = database.list_wallpapers(1, 10, false)?.items;
+        let selected_id = records.iter().find(|item| item.remote_id != "stale-unselected").unwrap().id;
+        let stale_id = records.iter().find(|item| item.remote_id == "stale-unselected").unwrap().id;
+        database.set_rotation_selection(selected_id, true)?;
+        database.configure_rotation("DISPLAY-1", &[selected_id, stale_id], 600, "fill", "round_robin")?;
+
+        // Recreate the legacy mismatch: an unchecked image remains in the monitor snapshot.
+        {
+            let connection = database.lock()?;
+            connection.execute("DELETE FROM rotation_selection WHERE wallpaper_id = ?1", [stale_id])?;
+            connection.execute("INSERT INTO rotation_queue(system_monitor_id, generation, wallpaper_id, position) VALUES ('DISPLAY-1', 1, ?1, 0)", [stale_id])?;
+        }
+        drop(database);
+
+        let upgraded = Database::open(&path)?;
+        assert_eq!(upgraded.next_rotation_wallpaper("DISPLAY-1")?.id, selected_id);
+        let connection = upgraded.lock()?;
+        let stale_pool_count: i64 = connection.query_row(
+            "SELECT COUNT(*) FROM rotation_wallpaper WHERE wallpaper_id = ?1", [stale_id], |row| row.get(0)
+        )?;
+        let stale_queue_count: i64 = connection.query_row(
+            "SELECT COUNT(*) FROM rotation_queue WHERE wallpaper_id = ?1", [stale_id], |row| row.get(0)
+        )?;
+        assert_eq!(stale_pool_count, 0);
+        assert_eq!(stale_queue_count, 0);
         Ok(())
     }
 

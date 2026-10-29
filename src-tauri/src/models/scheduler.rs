@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     error::{AppError, AppResult},
+    models::WallpaperRecord,
     platform::RuntimeEnvironment,
 };
 
@@ -32,6 +33,8 @@ pub struct RotationExplanation {
     pub source_collection_ids: Vec<i64>,
     pub candidate_count: u32,
     pub queued_count: u32,
+    pub candidates: Vec<WallpaperRecord>,
+    pub queued_wallpapers: Vec<WallpaperRecord>,
 }
 
 /// Versioned declarative constraints; arbitrary code and cron expressions are rejected.

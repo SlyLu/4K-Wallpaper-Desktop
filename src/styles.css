@@ -255,6 +255,15 @@ body::before,body::after { z-index: 0; }
 .rotation-controls { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 .rotation-messages { padding-top: 0; }
 .rotation-messages p { margin: 6px 0 0; }
+.rotation-count-link { padding: 0; border: 0; color: var(--color-accent); background: transparent; cursor: pointer; text-decoration: underline; }
+.rotation-inspection-backdrop { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; padding: 24px; background: #10182088; }
+.rotation-inspection { width: min(760px, 100%); max-height: min(80vh, 760px); overflow: auto; padding: 22px; border: 1px solid var(--color-border); border-radius: 18px; color: var(--color-text); background: var(--color-surface); box-shadow: 0 20px 70px #0005; }
+.rotation-inspection header { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
+.rotation-inspection h2 { margin: 0; }.rotation-inspection h2 small { color: var(--color-muted); font-size: .8em; }
+.rotation-inspection ul { display: grid; gap: 10px; margin: 0; padding: 0; list-style: none; }
+.rotation-inspection li { display: flex; align-items: center; gap: 14px; min-height: 72px; padding: 8px; border: 1px solid var(--color-border); border-radius: 12px; }
+.rotation-inspection li img { width: 96px; height: 64px; object-fit: cover; border-radius: 8px; }
+.rotation-inspection li div { display: grid; gap: 6px; }.rotation-inspection li small { color: var(--color-muted); }
 
 /* Collections emphasize the active collection; creation stays collapsed until requested. */
 .collection-create { display: grid; gap: 15px; }

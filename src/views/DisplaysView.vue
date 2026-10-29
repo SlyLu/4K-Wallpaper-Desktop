@@ -20,6 +20,21 @@ const strategy = ref<RotationStrategy>("round_robin");
 const collections = ref<CollectionRecord[]>([]);
 const selectedCollectionIds = ref<number[]>([]);
 const message = ref("");
+const inspection = ref<"candidates" | "queue">();
+const inspectedWallpapers = computed(() => {
+  const explanation = selectedSchedule.value
+    ? schedulerStore.explanations[selectedSchedule.value.systemMonitorId]
+    : undefined;
+  return inspection.value === "queue"
+    ? explanation?.queuedWallpapers ?? []
+    : explanation?.candidates ?? [];
+});
+
+/** Reloads persisted source and queue state at inspection time to avoid showing stale route data. */
+async function openInspection(section: "candidates" | "queue"): Promise<void> {
+  await schedulerStore.refresh();
+  inspection.value = section;
+}
 const rules = reactive<RotationRules>({ version: 1, dayGroup: "all", pauseOnBattery: false, pauseOnFullscreen: false });
 const selectedSchedule = computed(() => schedulerStore.schedules.find((item) => item.systemMonitorId === selectedMonitorId.value));
 
@@ -109,6 +124,13 @@ onMounted(async () => {
     <div v-if="collections.length" class="rotation-section"><div class="rotation-section-title"><strong>集合来源</strong><span>选择集合后使用集合内容；不选集合时仅使用已勾选壁纸。</span></div><label class="collection-source-field">参与轮换的集合<select v-model="selectedCollectionIds" multiple><option v-for="collection in collections" :key="collection.id" :value="collection.id">{{ collection.name }}（{{ collection.wallpaperCount }} 张）</option></select><small>按 Ctrl 可选择多个集合。</small></label></div>
     <div class="rotation-section"><div class="rotation-section-title"><strong>生效时间与暂停条件</strong><span>留空开始、结束时间表示全天生效。</span></div><div class="rotation-rule-grid"><label>日期范围<select v-model="rules.dayGroup"><option value="all">每天</option><option value="weekdays">仅工作日</option><option value="weekends">仅周末</option></select></label><label>开始时间<input v-model="rules.startTime" type="time" /></label><label>结束时间<input v-model="rules.endTime" type="time" /></label><label class="rule-toggle"><input v-model="rules.pauseOnBattery" type="checkbox" /><span><strong>电池供电时暂停</strong><small>减少笔记本后台耗电</small></span></label><label class="rule-toggle"><input v-model="rules.pauseOnFullscreen" type="checkbox" /><span><strong>全屏应用时暂停</strong><small>游戏或演示期间不切换</small></span></label></div></div>
     <div class="rotation-footer"><button :disabled="schedulerStore.pending || (!selectedCollectionIds.length && !wallpaperStore.selectedCount)" @click="configure">保存并启用</button><div v-if="selectedSchedule" class="rotation-controls"><button class="secondary" @click="control(selectedSchedule.paused ? 'resume' : 'pause')">{{ selectedSchedule.paused ? '恢复轮换' : '暂停轮换' }}</button><button class="secondary" @click="control('previous')">上一张</button><button class="secondary" @click="control('next')">下一张</button><button class="secondary" @click="control('skip')">跳过当前</button></div></div>
-    <div v-if="message || (selectedSchedule && schedulerStore.explanations[selectedSchedule.systemMonitorId]?.lastReason) || selectedSchedule?.lastError" class="rotation-messages"><p v-if="message" class="message">{{ message }}</p><p v-if="selectedSchedule && schedulerStore.explanations[selectedSchedule.systemMonitorId]?.lastReason" class="message">选择原因：{{ schedulerStore.explanations[selectedSchedule.systemMonitorId]?.lastReason }} · 候选 {{ schedulerStore.explanations[selectedSchedule.systemMonitorId]?.candidateCount }} 张 · 队列剩余 {{ schedulerStore.explanations[selectedSchedule.systemMonitorId]?.queuedCount }} 张</p><p v-if="selectedSchedule?.lastError" class="message error">上次错误：{{ selectedSchedule.lastError }}</p></div>
+    <div v-if="message || (selectedSchedule && schedulerStore.explanations[selectedSchedule.systemMonitorId]?.lastReason) || selectedSchedule?.lastError" class="rotation-messages"><p v-if="message" class="message">{{ message }}</p><p v-if="selectedSchedule && schedulerStore.explanations[selectedSchedule.systemMonitorId]?.lastReason" class="message">选择原因：{{ schedulerStore.explanations[selectedSchedule.systemMonitorId]?.lastReason }} · <button class="rotation-count-link" @click="openInspection('candidates')">候选 {{ schedulerStore.explanations[selectedSchedule.systemMonitorId]?.candidateCount }} 张</button> · <button class="rotation-count-link" @click="openInspection('queue')">队列剩余 {{ schedulerStore.explanations[selectedSchedule.systemMonitorId]?.queuedCount }} 张</button></p><p v-if="selectedSchedule?.lastError" class="message error">上次错误：{{ selectedSchedule.lastError }}</p></div>
   </section>
+  <div v-if="inspection" class="rotation-inspection-backdrop" @click.self="inspection = undefined">
+    <section class="rotation-inspection" role="dialog" aria-modal="true" :aria-label="inspection === 'queue' ? '队列剩余壁纸' : '轮换候选壁纸'">
+      <header><h2>{{ inspection === 'queue' ? '队列剩余壁纸' : '轮换候选壁纸' }} <small>{{ inspectedWallpapers.length }} 张</small></h2><button class="secondary" @click="inspection = undefined">关闭</button></header>
+      <p v-if="!inspectedWallpapers.length" class="message">当前列表为空。</p>
+      <ul v-else><li v-for="wallpaper in inspectedWallpapers" :key="wallpaper.id"><img v-if="wallpaper.thumbnailUrl" :src="wallpaper.thumbnailUrl" :alt="wallpaper.name" /><div><strong>{{ wallpaper.name }}</strong><small>{{ wallpaper.provider }} · {{ wallpaper.width }} × {{ wallpaper.height }} · {{ wallpaper.id }}</small></div></li></ul>
+    </section>
+  </div>
 </template>
